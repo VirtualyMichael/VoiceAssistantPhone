@@ -13,8 +13,8 @@ android {
         applicationId = "com.voiceassistant.phone"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "0.15.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // the phone is 64-bit ARM; leaving the other chips out keeps the sherpa-onnx library from adding tens of MB
@@ -28,7 +28,7 @@ android {
         release {
             optimization {
                 enable = true
-                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
+                packageScope = setOf("androidx.**") // Kotlin and kotlinx are left alone: shrinking them crashed the release build at start
             }
         }
     }
@@ -51,6 +51,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.biometric:biometric:1.1.0") // the fingerprint or PIN check for safety settings
+    implementation("androidx.fragment:fragment:1.8.5") // biometric brings an old one, which a release build's checks refuse (activity results)
     implementation("com.google.zxing:core:3.5.3") // reads the pairing QR code (Apache-2.0)
     implementation("androidx.camera:camera-core:1.4.2") // the in-app camera
     implementation("androidx.camera:camera-camera2:1.4.2")
