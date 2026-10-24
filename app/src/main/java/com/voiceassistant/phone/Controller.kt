@@ -500,6 +500,25 @@ object Controller : RemoteListener {
         if (text.isNotBlank()) client?.sendText(text.trim())
     }
 
+    /** A question about the settings, asked from the settings screen; its answer is shown there (see [settingsAnswer]). */
+    var settingsQuestion by mutableStateOf("")
+        private set
+    private var settingsQuestionAt = -1
+
+    fun askAboutSettings(question: String) {
+        val q = question.trim()
+        if (q.isEmpty() || !connected) return
+        settingsQuestion = q
+        settingsQuestionAt = lines.size
+        sendText("A question about your settings: $q")
+    }
+
+    fun clearSettingsQuestion() { settingsQuestion = ""; settingsQuestionAt = -1 }
+
+    /** The assistant's reply to [settingsQuestion] so far ("" until it starts answering). */
+    val settingsAnswer: String
+        get() = if (settingsQuestionAt < 0) "" else lines.drop(settingsQuestionAt).lastOrNull { !it.fromUser }?.text.orEmpty()
+
     fun answer(ok: Boolean) {
         approval?.let { client?.confirmResult(it.id, ok) }
         approval = null

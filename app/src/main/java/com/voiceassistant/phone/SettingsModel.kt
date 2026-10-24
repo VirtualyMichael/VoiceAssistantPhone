@@ -28,6 +28,7 @@ data class SettingItem(
     val sensitive: Boolean = false,
     val locked: Boolean = false,
     val essential: Boolean = false,
+    val advanced: Boolean = false, // most people never need it: shown under "Advanced" at the end of its section
     val sectionTitle: String = "",
 ) {
     /** The value as a short line for the row. */
@@ -47,7 +48,44 @@ data class SettingItem(
     val isDefault: Boolean get() = default == null || value == default
 }
 
-data class SettingSection(val id: String, val title: String, val blurb: String, val items: List<SettingItem>)
+data class SettingSection(val id: String, val title: String, val blurb: String, val items: List<SettingItem>, val icon: String = "") {
+    val everyday: List<SettingItem> get() = items.filter { !it.advanced }
+    val advanced: List<SettingItem> get() = items.filter { it.advanced }
+}
+
+/** Search in everyday words: every word of the query (or a word meaning the same) must appear in the name, help or section; name matches come first. */
+object SettingsSearch {
+    private val alike = listOf(
+        setOf("speed", "fast", "faster", "slow", "slower", "quick"), setOf("speak", "speaking", "talk", "talking", "speech", "voice"),
+        setOf("microphone", "mic", "listen", "listening", "hear"), setOf("speaker", "speakers", "sound", "audio", "output", "headphones"),
+        setOf("wake", "hey"), setOf("video", "clip", "film", "camera", "frames"), setOf("photo", "photos", "picture", "camera", "image"),
+        setOf("internet", "web", "online", "search"), setOf("remember", "history", "chats", "memory"), setOf("music", "song", "youtube", "volume"),
+        setOf("light", "lights", "lamp", "govee", "home"), setOf("language", "translate", "translation"), setOf("update", "updates", "version"),
+        setOf("model", "llm", "brain", "provider"), setOf("ask", "confirm", "permission", "allow", "safety", "privacy"),
+        setOf("butler", "personality", "jarvis", "persona"), setOf("vibrate", "vibration", "buzz", "haptics"), setOf("timer", "countdown", "delay"),
+    )
+
+    private fun variants(word: String): Set<String> = alike.filter { word in it }.flatten().toSet() + word
+
+    fun search(items: List<SettingItem>, query: String): List<SettingItem> {
+        val words = query.lowercase().split(' ').filter { it.isNotBlank() }
+        if (words.isEmpty()) return emptyList()
+        return items.mapNotNull { item ->
+            val label = item.label.lowercase()
+            val haystack = "$label ${item.help} ${item.sectionTitle}".lowercase()
+            var score = 0
+            for (w in words) {
+                val vs = variants(w)
+                score += when {
+                    vs.any { it in label } -> 3
+                    vs.any { it in haystack } -> 1
+                    else -> return@mapNotNull null
+                }
+            }
+            item to score + (if (item.essential) 1 else 0) - (if (item.advanced) 1 else 0)
+        }.sortedByDescending { it.second }.map { it.first }
+    }
+}
 
 data class SettingsSnapshot(val allowSafety: Boolean, val restartPending: Boolean, val sections: List<SettingSection>) {
     val all: List<SettingItem> get() = sections.flatMap { it.items }
@@ -58,15 +96,8 @@ data class SettingsSnapshot(val allowSafety: Boolean, val restartPending: Boolea
 
     fun section(id: String): SettingSection? = sections.firstOrNull { it.id == id }
 
-    /** Every word of the query must appear in the setting's name, help or section. */
-    fun search(query: String): List<SettingItem> {
-        val words = query.lowercase().split(' ').filter { it.isNotBlank() }
-        if (words.isEmpty()) return emptyList()
-        return all.filter { item ->
-            val haystack = "${item.label} ${item.help} ${item.sectionTitle}".lowercase()
-            words.all { it in haystack }
-        }
-    }
+    /** Every word of the query (or one meaning the same) must appear in the setting's name, help or section. */
+    fun search(query: String): List<SettingItem> = SettingsSearch.search(all, query)
 
     fun withValue(key: String, value: Any?): SettingsSnapshot = copy(
         sections = sections.map { s -> s.copy(items = s.items.map { if (it.key == key) it.copy(value = value) else it }) },
@@ -84,7 +115,10 @@ data class SettingsSnapshot(val allowSafety: Boolean, val restartPending: Boolea
                     val s = sections.getJSONObject(i)
                     val title = s.optString("title")
                     val items = s.optJSONArray("items") ?: JSONArray()
-                    SettingSection(s.optString("id"), title, s.optString("blurb"), (0 until items.length()).map { parseItem(items.getJSONObject(it), title) })
+                    SettingSection(
+                        s.optString("id"), title, s.optString("blurb"), (0 until items.length()).map { parseItem(items.getJSONObject(it), title) },
+                        icon = s.optString("icon"),
+                    )
                 },
             )
         }
@@ -106,7 +140,7 @@ data class SettingsSnapshot(val allowSafety: Boolean, val restartPending: Boolea
                 min = o.optDouble("min", 0.0), max = o.optDouble("max", 1.0), step = o.optDouble("step", 1.0), integer = o.optBoolean("integer"),
                 unit = o.optString("unit"), multiline = o.optBoolean("multiline"), maxLength = o.optInt("maxlen", 200),
                 summary = o.optString("summary"), items = preview, restartNeeded = o.optString("apply") == "restart",
-                sensitive = o.optBoolean("sensitive"), locked = o.optBoolean("locked"), essential = o.optBoolean("essential"),
+                sensitive = o.optBoolean("sensitive"), locked = o.optBoolean("locked"), essential = o.optBoolean("essential"), advanced = o.optBoolean("advanced"),
                 sectionTitle = sectionTitle,
             )
         }

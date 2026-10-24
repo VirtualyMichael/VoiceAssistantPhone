@@ -86,6 +86,27 @@ class SettingsModelTest {
     }
 
     @Test
+    fun searchUnderstandsEverydayWordsAndPutsNameMatchesFirst() {
+        assertEquals("tts_speed", snapshot.search("slower").firstOrNull()?.key) // "slower" means the speed
+        assertEquals("persona_jarvis", snapshot.search("jarvis").firstOrNull()?.key)
+        assertEquals("remote_output", snapshot.search("replies").first().key)
+    }
+
+    @Test
+    fun advancedSettingsAndSectionIconsComeThrough() {
+        val parsed = SettingsSnapshot.parse(JSONObject("""
+            {"sections": [{"id": "speech", "title": "Voice", "blurb": "b", "icon": "speaker", "items": [
+              {"key": "a", "label": "A", "help": "", "kind": "toggle", "value": true, "advanced": false},
+              {"key": "b", "label": "B", "help": "", "kind": "toggle", "value": true, "advanced": true}]}]}
+        """))
+        val s = parsed.sections.single()
+        assertEquals("speaker", s.icon)
+        assertEquals(listOf("a"), s.everyday.map { it.key })
+        assertEquals(listOf("b"), s.advanced.map { it.key })
+        assertFalse(snapshot.find("tts_speed")!!.advanced) // older PCs do not send it
+    }
+
+    @Test
     fun changingAValueTouchesOnlyThatSetting() {
         val changed = snapshot.withValue("tts_speed", 0.8)
         assertEquals(0.8, changed.find("tts_speed")!!.value)
