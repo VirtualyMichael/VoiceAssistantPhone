@@ -18,7 +18,7 @@ import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import kotlin.math.sqrt
 
-data class Line(val fromUser: Boolean, val text: String)
+data class Line(val fromUser: Boolean, val text: String, val card: AnswerCard? = null)
 data class Approval(val id: String, val prompt: String)
 /** The assistant's request for the camera. mode is "photo", or "video" with the limits below (the PC's quality level: normal, mid or high). */
 data class CameraRequest(
@@ -757,6 +757,7 @@ object Controller : RemoteListener {
                 )
                 "camera_close" -> if (camera?.id == message.optString("id")) closeCamera()
                 "share_saved" -> shareReplies[message.optString("id")] = message
+                "card" -> attachCard(AnswerCard.parse(message))
                 "phone_action" -> receiveAction(PhoneAction(message.optString("id"), message.optString("action"), message.optJSONObject("args") ?: JSONObject()))
                 "assistant_delta" -> appendAssistant(message.optString("text"))
                 "confirm" -> approval = Approval(message.optString("id"), message.optString("prompt"))
@@ -853,9 +854,16 @@ object Controller : RemoteListener {
 
     private const val CAMERA_NOTIFICATION_ID = 2
 
+    /** A card goes under the reply it belongs to: the one already holding it (the pictures arrive as an update), else the latest reply. */
+    private fun attachCard(card: AnswerCard) {
+        if (card.isEmpty) return
+        val i = lines.indexOfLast { it.card?.id == card.id }.takeIf { it >= 0 } ?: lines.indexOfLast { !it.fromUser && it.text.isNotBlank() }
+        if (i >= 0) lines[i] = lines[i].copy(card = card)
+    }
+
     private fun appendAssistant(text: String) {
         val last = lines.lastIndex
-        if (last >= 0 && !lines[last].fromUser) lines[last] = Line(false, lines[last].text + text) else lines.add(Line(false, text))
+        if (last >= 0 && !lines[last].fromUser && lines[last].card == null) lines[last] = lines[last].copy(text = lines[last].text + text) else lines.add(Line(false, text))
     }
 
     override fun onAudio(pcm: ByteArray) = player.write(pcm)

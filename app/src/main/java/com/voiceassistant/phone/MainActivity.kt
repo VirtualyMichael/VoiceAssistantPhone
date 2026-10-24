@@ -49,6 +49,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import com.voiceassistant.phone.ui.theme.VoiceAssistantPhoneTheme
@@ -122,7 +123,7 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
                                     }
                                 },
                             )
-                            else -> TalkScreen(micAllowed, { askForMic.launch(Manifest.permission.RECORD_AUDIO) }) { settingsPage = "" }
+                            else -> TalkScreen(micAllowed, { askForMic.launch(Manifest.permission.RECORD_AUDIO) }) { section -> settingsPage = section }
                         }
                     }
                 }
@@ -146,17 +147,17 @@ private fun ComponentActivity.pairFromDebugIntent(intent: android.content.Intent
 }
 
 @Composable
-private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, openSettings: () -> Unit) {
+private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, openSettings: (section: String) -> Unit) {
     val listState = rememberLazyListState()
     var typed by remember { mutableStateOf("") }
     val lines = Controller.lines
-    LaunchedEffect(lines.size, lines.lastOrNull()?.text?.length) {
+    LaunchedEffect(lines.size, lines.lastOrNull()?.text?.length, lines.lastOrNull { it.card != null }?.card) { // a card arriving scrolls it into view too
         if (lines.isNotEmpty()) listState.animateScrollToItem(lines.lastIndex)
     }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(Controller.status, style = MaterialTheme.typography.titleMedium)
-            TextButton(openSettings) { Text("Settings") }
+            TextButton({ openSettings("") }) { Text("Settings") }
         }
         if (!Controller.connected) {
             val context = LocalContext.current
@@ -168,7 +169,7 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, openSettings:
         // hands-free is switched on and set up in Settings (This phone); only a problem with it is worth showing here
         if (Controller.hfNotice.isNotBlank()) Text(Controller.hfNotice, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(lines) { line -> Bubble(line) }
+            items(lines) { line -> Bubble(line, openSettings) }
         }
         val live = Controller.partial
         if (live.isNotBlank()) {
@@ -261,17 +262,18 @@ private fun TalkButton() {
 }
 
 @Composable
-private fun Bubble(line: Line) {
+private fun Bubble(line: Line, openSection: (String) -> Unit) {
     if (line.text.isBlank()) return
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (line.fromUser) Arrangement.End else Arrangement.Start) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = if (line.fromUser) Alignment.End else Alignment.Start) {
         Text(
-            line.text,
+            if (line.fromUser) AnnotatedString(line.text) else AnswerCard.linkify(line.text, MaterialTheme.colorScheme.primary),
             Modifier
                 .clip(RoundedCornerShape(16.dp))
                 .background(if (line.fromUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             color = if (line.fromUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        line.card?.let { AnswerCardView(it, openSection) }
     }
 }
 
