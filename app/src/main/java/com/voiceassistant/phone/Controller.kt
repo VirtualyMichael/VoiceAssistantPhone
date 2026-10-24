@@ -11,6 +11,8 @@ import android.os.Looper
 import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -166,6 +168,10 @@ object Controller : RemoteListener {
                 "Lets the assistant read the notifications on this phone when you ask, for example “what did I miss?”. They go to your PC only, and only when you ask. " +
                     "Android also needs notification access for this app; turning this on opens that page.",
                 "toggle", value = readNotifications && NotificationReader.accessGranted(appContext), default = false, sectionTitle = where),
+            SettingItem("phone.offline", if (offlineProgress >= 0) "Offline helper (downloading: $offlineProgress%)" else "Offline helper",
+                "When your PC is out of reach, typed requests like alarms, timers, texts, calls and simple questions are handled by a small AI model on this phone. " +
+                    "It is much less capable than the one on your PC and cannot search the web. Needs a one-time ${OnDeviceModel.DOWNLOAD_TEXT} download; everything stays on this phone.",
+                "toggle", value = offlineHelperOn || offlineProgress >= 0, default = false, sectionTitle = where),
         )
     }
 
@@ -180,6 +186,7 @@ object Controller : RemoteListener {
             "phone.sensitivity" -> changeSensitivity(value.toString().toIntOrNull() ?: 1)
             "phone.camera_timer" -> { cameraTimerDefault = value == true; prefs.edit().putBoolean("camera_timer", cameraTimerDefault).apply() }
             "phone.haptics" -> { hapticsOn = value == true; prefs.edit().putBoolean("haptics", hapticsOn).apply() }
+            "phone.offline" -> if (offlineProgress < 0) changeOfflineHelper(value == true)
             "phone.notifications" -> {
                 readNotifications = value == true
                 prefs.edit().putBoolean("read_notifications", readNotifications).apply()
@@ -262,6 +269,7 @@ object Controller : RemoteListener {
         hapticsOn = prefs.getBoolean("haptics", true)
         cameraTimerDefault = prefs.getBoolean("camera_timer", false)
         readNotifications = prefs.getBoolean("read_notifications", false)
+        offlineHelperOn = prefs.getBoolean("offline_helper", false) && OnDeviceModel.available(appContext)
         handsFree = prefs.getBoolean("handsfree", false) &&
             appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val stored = Pairing.parse(prefs.getString("pairing", "") ?: "")
@@ -517,7 +525,61 @@ object Controller : RemoteListener {
     }
 
     fun sendText(text: String) {
-        if (text.isNotBlank()) client?.sendText(text.trim())
+        if (text.isBlank()) return
+        if (!connected && canAnswerOffline) askOffline(text.trim()) else client?.sendText(text.trim())
+    }
+
+    // ---- the offline helper: the model on the phone answers simple requests when the PC is out of reach ----
+    /** The user turned the offline helper on (Settings, This phone). It needs the model file, which is downloaded once. */
+    var offlineHelperOn by mutableStateOf(false)
+        private set
+    /** Ask before the 1.9 GB download starts. */
+    var offlineDownloadAsk by mutableStateOf(false)
+        private set
+    /** 0..100 while the model downloads, -1 otherwise. */
+    var offlineProgress by mutableIntStateOf(-1)
+        private set
+    var offlineBusy by mutableStateOf(false)
+        private set
+    private val offlineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+
+    val canAnswerOffline: Boolean get() = offlineHelperOn && !offlineBusy && OnDeviceModel.available(appContext)
+
+    private fun askOffline(text: String) {
+        lines.add(Line(true, text))
+        offlineBusy = true
+        offlineScope.launch {
+            val raw = runCatching { OnDeviceModel.ask(appContext, text, OfflineHelper.system()).first }.getOrElse { "" }
+            val result = OfflineHelper.parse(raw)
+            main.post {
+                offlineBusy = false
+                when (result) {
+                    is OfflineResult.Say -> lines.add(Line(false, result.text))
+                    is OfflineResult.Do -> { lines.add(Line(false, "Working offline: " + result.action.describe())); pendingAction = result.action }
+                    OfflineResult.Failed -> lines.add(Line(false, "Sorry, I couldn't work that out without your PC."))
+                }
+            }
+        }
+    }
+
+    private fun changeOfflineHelper(on: Boolean) {
+        if (!on) { offlineHelperOn = false; prefs.edit().putBoolean("offline_helper", false).apply(); return }
+        if (OnDeviceModel.available(appContext)) { offlineHelperOn = true; prefs.edit().putBoolean("offline_helper", true).apply() }
+        else offlineDownloadAsk = true
+    }
+
+    fun answerOfflineDownload(start: Boolean) {
+        offlineDownloadAsk = false
+        if (!start || offlineProgress >= 0) return
+        offlineProgress = 0
+        Thread {
+            val problem = OnDeviceModel.download(appContext) { p -> main.post { offlineProgress = p } }
+            main.post {
+                offlineProgress = -1
+                if (problem == null) { offlineHelperOn = true; prefs.edit().putBoolean("offline_helper", true).apply(); showSettingsNote("The offline helper is ready.") }
+                else showSettingsNote(problem, error = true)
+            }
+        }.start()
     }
 
     /** A question about the settings, asked from the settings screen; its answer is shown there (see [settingsAnswer]). */
@@ -652,6 +714,10 @@ object Controller : RemoteListener {
         val action = pendingAction ?: return
         pendingAction = null
         appContext.getSystemService(NotificationManager::class.java).cancel(ACTION_NOTIFICATION_ID)
+        if (action.id == "offline") { // from the offline helper: nobody on the PC is waiting, so the answer goes in the chat
+            lines.add(Line(false, if (!ok) "Okay, cancelled." else PhoneAction.perform(context, action, number).second))
+            return
+        }
         if (!ok) { client?.phoneActionResult(action.id, false, reason); return }
         val (done, message) = PhoneAction.perform(context, action, number)
         client?.phoneActionResult(action.id, done, message)

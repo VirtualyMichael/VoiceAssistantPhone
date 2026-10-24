@@ -19,6 +19,11 @@ and plays the spoken reply. Nothing leaves your own devices unless you chose a c
   send or call yourself. Names ("text Mom") are looked up in the phone's contacts (asked for the first time) and never leave the phone.
 - **Notifications**: with "Read my notifications" on (Settings, This phone) and Android's notification access given, the assistant can
   read the notifications on the phone when you ask ("what did I miss?").
+- **Offline helper** (off by default; Settings, This phone): when the PC is out of reach, typed requests are handled by a small AI model on the
+  phone itself (Gemma 4 E2B with Google's [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM)), after a one-time 1.9 GB download that
+  asks first. It sets alarms and timers, starts texts and calls (each still needs your Yes), and answers simple questions in about 2 seconds.
+  It cannot search the web and is clearly less accurate than the PC's model (4 of 9 everyday questions and 9 of 10 commands right in our
+  tests). Everything stays on the phone. Voice input offline is not built yet.
 - **Settings**: every setting of the assistant that is safe to change remotely, searchable, with a "?" help line on each. Safety settings
   are locked unless the PC owner allows them on the PC, and then still ask for the phone's fingerprint or PIN.
 - **Phone-only settings**: hands-free, wake phrase and sensitivity, camera timer, vibration.
@@ -52,7 +57,11 @@ Ignored in any build that is not debuggable:
 - `adb shell am start -S -n com.voiceassistant.phone/.MainActivity --ez demo_camera true` opens the camera screen without the assistant asking
   (the log tag `VoiceAssistant` prints the phone's zoom range and lenses).
 
-Remove these before any public release.
+- `adb shell am start -S -n com.voiceassistant.phone/.MainActivity --es eval_id ID --es eval_prompt_b64 <base64>` asks the offline model one question
+  and logs the answer under the tag `VA_EVAL` (the PC repository's `evals/phone_model.py` drives it and scores the answers). Use `-S`: a
+  second `am start` on a running app is silently dropped.
+
+These do nothing in a release build.
 
 ## Notes
 

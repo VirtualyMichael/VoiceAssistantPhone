@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
@@ -108,6 +109,13 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
             VoiceAssistantPhoneTheme {
                 BackHandler(enabled = settingsPage != null) { settingsPage = if (settingsPage.isNullOrEmpty()) null else "" }
                 DiagnosisDialog()
+                if (Controller.offlineDownloadAsk) AlertDialog(
+                    onDismissRequest = { Controller.answerOfflineDownload(false) },
+                    title = { Text("Download the offline helper?") },
+                    text = { Text("It is a ${OnDeviceModel.DOWNLOAD_TEXT} download from Hugging Face, best on Wi-Fi. After that it works with no internet and nothing leaves your phone.") },
+                    confirmButton = { Button({ Controller.answerOfflineDownload(true) }) { Text("Download") } },
+                    dismissButton = { TextButton({ Controller.answerOfflineDownload(false) }) { Text("Not now") } },
+                )
                 Controller.pendingAction?.let { PhoneActionDialog(it, { askForContacts.launch(Manifest.permission.READ_CONTACTS) }, contactsAllowed) }
                 if (Controller.pairing != null && !Controller.setupActive) Controller.incomingShare?.let { ShareSheet(it) }
                 Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
@@ -140,6 +148,7 @@ private fun ComponentActivity.pairFromDebugIntent(intent: android.content.Intent
     val debuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
     val encoded = intent?.getStringExtra("pairing_b64")
     android.util.Log.i("VoiceAssistant", "debug pairing: debuggable=$debuggable extra=${encoded != null}")
+    if (debuggable && intent?.getStringExtra("eval_id") != null) DebugEval.handle(this, intent) // measuring the on-device model, see OnDeviceModel.kt
     if (debuggable && intent?.getBooleanExtra("demo_camera", false) == true) { // lets `adb` open the camera screen without the assistant asking
         Controller.openDemoCamera()
         startActivity(android.content.Intent(this, CameraActivity::class.java))
@@ -157,7 +166,7 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, openSettings:
     LaunchedEffect(lines.size, lines.lastOrNull()?.text?.length, lines.lastOrNull { it.card != null }?.card) { // a card arriving scrolls it into view too
         if (lines.isNotEmpty()) listState.animateScrollToItem(lines.lastIndex)
     }
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(Modifier.fillMaxSize().imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) { // imePadding: the keyboard must not cover the message box
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(Controller.status, style = MaterialTheme.typography.titleMedium)
             TextButton({ openSettings("") }) { Text("Settings") }
@@ -165,7 +174,10 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, openSettings:
         if (!Controller.connected) {
             val context = LocalContext.current
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Not connected to your PC", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    if (Controller.offlineHelperOn) "Not connected to your PC. Type a request and the offline helper on this phone will try." else "Not connected to your PC",
+                    Modifier.weight(1f).padding(end = 8.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
+                )
                 OutlinedButton({ Controller.runDiagnosis(context) }, enabled = !Controller.diagnosing) { Text(if (Controller.diagnosing) "Checking…" else "Find out why") }
             }
         }
@@ -195,7 +207,7 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, openSettings:
         }
         Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(typed, { typed = it }, Modifier.weight(1f), placeholder = { Text("Or type a message") }, singleLine = true)
-            Button({ Controller.sendText(typed); typed = "" }, enabled = Controller.connected) { Text("Send") }
+            Button({ Controller.sendText(typed); typed = "" }, enabled = Controller.connected || Controller.canAnswerOffline) { Text("Send") }
         }
     }
     Controller.approval?.let { ask ->
