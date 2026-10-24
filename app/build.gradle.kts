@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -24,8 +27,23 @@ android {
         noCompress += "onnx" // the models are read straight from the app package
     }
 
+    // The release key lives outside the project (never in git): ~/.android-keys/voiceassistant-release.properties names the keystore and its passwords.
+    // Without that file (another machine) the release build is simply left unsigned.
+    val releaseKeyFile = File(System.getProperty("user.home"), ".android-keys/voiceassistant-release.properties")
+    val hasReleaseKey = releaseKeyFile.exists()
+    val releaseKey = Properties()
+    if (hasReleaseKey) releaseKey.load(FileInputStream(releaseKeyFile))
+    signingConfigs {
+        if (hasReleaseKey) create("release") {
+            storeFile = File(releaseKey.getProperty("storeFile"))
+            storePassword = releaseKey.getProperty("storePassword")
+            keyAlias = releaseKey.getProperty("keyAlias")
+            keyPassword = releaseKey.getProperty("keyPassword")
+        }
+    }
     buildTypes {
         release {
+            if (hasReleaseKey) signingConfig = signingConfigs.getByName("release")
             optimization {
                 enable = true
                 packageScope = setOf("androidx.**") // Kotlin and kotlinx are left alone: shrinking them crashed the release build at start

@@ -40,6 +40,14 @@ Requirements: Android Studio (it brings its own Java), an Android 8+ phone, the 
 3. `gradlew testDebugUnitTest` runs the unit tests (wake/voice state machine, photo sizing, settings parsing).
 4. Install the debug APK; pair it with the PC (`python -m voice_assistant phone pair` on the PC prints the code to paste in the app).
 
+### Release build
+
+`gradlew assembleRelease` makes `app/build/outputs/apk/release/app-release.apk`, signed with the release key if
+`~/.android-keys/voiceassistant-release.properties` exists (it names the keystore and passwords; nothing of it is in git), otherwise unsigned.
+**Back up the whole `~/.android-keys` folder** (a password manager's file storage, or an encrypted drive). Every update must be signed with the
+same key; if it is lost, nobody can update the app. A release APK cannot be installed over a debug one (different key): uninstall first, which
+also removes the app's data, including a downloaded offline model.
+
 ### Files that are not in git
 
 | File | Why | Where to get it |
