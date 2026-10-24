@@ -1,0 +1,588 @@
+package com.voiceassistant.phone
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
+import org.json.JSONObject
+import kotlin.math.sqrt
+
+data class Line(val fromUser: Boolean, val text: String)
+data class Approval(val id: String, val prompt: String)
+data class CameraRequest(val id: String, val prompt: String, val auto: Boolean)
+
+/** A short message at the bottom of the settings screen. [undoKey] is set when the change can be taken back. */
+data class SettingsNote(val text: String, val undoKey: String? = null, val undoValue: Any? = null, val error: Boolean = false)
+
+/** The one thing the user should be able to read off the screen at any moment. */
+enum class Phase(val label: String) {
+    Offline("Waiting for your PC…"),
+    Armed(""), // the label is built from the wake phrase
+    Idle("Hold to talk"),
+    Starting("One moment…"),
+    Listening("Listening. Speak now"),
+    Sending("Got it…"),
+    Thinking("Thinking…"),
+    Speaking("Speaking…"),
+}
+
+/** Everything the screen shows, plus the push-to-talk logic. One instance for the whole app, so turning the phone does not drop the link. */
+object Controller : RemoteListener {
+    private val main = Handler(Looper.getMainLooper())
+    private lateinit var prefs: android.content.SharedPreferences
+    private var client: RemoteClient? = null
+    private var mic: Mic? = null
+    private val player = Player()
+    private var started = false
+    private lateinit var appContext: Context
+    private var detectors: SherpaDetectors? = null
+    private var engine: HandsFreeEngine? = null
+    private var keywordLines = ""
+    private var visibleActivities = 0
+    private var wantConnected = false
+    private var waitingForListening = false
+    private var talkEndedAt = 0L
+    private var frames = 0
+    private var gotWords = false
+    // "Got it…" is only ever a short in-between state: whatever happened, it ends a few seconds after you let go.
+    private val noWordsCheck = Runnable {
+        sent = false
+        if (!gotWords) notice = "I didn't catch anything. Hold the button while you speak."
+    }
+
+    var pairing by mutableStateOf<Pairing?>(null)
+        private set
+    var connected by mutableStateOf(false)
+        private set
+    var status by mutableStateOf("Not paired yet")
+        private set
+    var assistantState by mutableStateOf("idle")
+        private set
+    var talking by mutableStateOf(false)
+        private set
+    var micOpen by mutableStateOf(false)
+        private set
+    var sent by mutableStateOf(false)
+        private set
+    var level by mutableFloatStateOf(0f)
+        private set
+    var partial by mutableStateOf("")
+        private set
+    var notice by mutableStateOf("")
+        private set
+    var latency by mutableStateOf("")
+        private set
+    var approval by mutableStateOf<Approval?>(null)
+        private set
+    val lines = mutableStateListOf<Line>()
+
+    /** The PC's settings, as last received. */
+    var settings by mutableStateOf<SettingsSnapshot?>(null)
+        private set
+    var settingsNote by mutableStateOf<SettingsNote?>(null)
+        private set
+    var hapticsOn by mutableStateOf(true)
+        private set
+    var cameraTimerDefault by mutableStateOf(false)
+        private set
+    private val previousValues = mutableMapOf<String, Any?>()
+
+    /** The PC's settings are requested again whenever the screen opens or the link comes back. */
+    fun loadSettings() {
+        if (connected) client?.getSettings()
+    }
+
+    fun changeSetting(key: String, value: Any) {
+        val current = settings ?: return
+        previousValues[key] = current.find(key)?.value
+        settings = current.withValue(key, value) // show it at once; the PC's answer confirms or puts it back
+        client?.setSetting(key, value)
+    }
+
+    fun undoSetting() {
+        val note = settingsNote ?: return
+        val key = note.undoKey ?: return
+        note.undoValue?.let { changeSetting(key, it) }
+        settingsNote = null
+    }
+
+    fun clearSettingsNote(note: SettingsNote) {
+        if (settingsNote == note) settingsNote = null
+    }
+
+    fun showSettingsNote(text: String, error: Boolean = false) {
+        settingsNote = SettingsNote(text, error = error)
+    }
+
+    /** Settings that live on this phone, not on the PC. */
+    fun phoneItems(): List<SettingItem> {
+        val where = "This phone"
+        return listOf(
+            SettingItem("phone.handsfree", "Hands-free", "Say your wake phrase and ask, even with the screen off. Needs the microphone and shows a notification while it listens.",
+                "toggle", value = handsFree, default = false, sectionTitle = where, essential = true),
+            SettingItem("phone.wake_phrase", "Wake phrase", "The words that start it listening. Plain words work best, like “Hey Jarvis”, and longer phrases are more reliable.",
+                "text", value = wakePhrase, default = "Hey Jarvis", maxLength = 40, sectionTitle = where),
+            SettingItem("phone.sensitivity", "Wake sensitivity", "High hears you from further away but may start by mistake. Low is stricter.",
+                "choice", value = sensitivity.toString(), default = "1",
+                choices = listOf(SettingChoice("0", "Low"), SettingChoice("1", "Normal"), SettingChoice("2", "High")), sectionTitle = where),
+            SettingItem("phone.camera_timer", "Camera timer", "Start the camera with the 3-second timer already on.", "toggle",
+                value = cameraTimerDefault, default = false, sectionTitle = where),
+            SettingItem("phone.haptics", "Vibrate on buttons", "A short buzz when you press Talk and when the microphone opens.", "toggle",
+                value = hapticsOn, default = true, sectionTitle = where),
+        )
+    }
+
+    /** Changes to [phoneItems] (hands-free goes through the screen, because it may need to ask for permissions). */
+    fun changePhoneSetting(key: String, value: Any) {
+        when (key) {
+            "phone.wake_phrase" -> changeWakePhrase(value.toString())
+            "phone.sensitivity" -> changeSensitivity(value.toString().toIntOrNull() ?: 1)
+            "phone.camera_timer" -> { cameraTimerDefault = value == true; prefs.edit().putBoolean("camera_timer", cameraTimerDefault).apply() }
+            "phone.haptics" -> { hapticsOn = value == true; prefs.edit().putBoolean("haptics", hapticsOn).apply() }
+        }
+    }
+
+    /** Debug builds only: lets `adb` open the camera screen without the assistant asking, to test it. */
+    fun openDemoCamera() { camera = CameraRequest("demo", "Demo camera", false) }
+
+    /** The photo the assistant has asked for; the camera screen shows while this is set. */
+    var camera by mutableStateOf<CameraRequest?>(null)
+        private set
+
+    /** Hands-free: the user switched it on. */
+    var handsFree by mutableStateOf(false)
+        private set
+    var hfState by mutableStateOf(HfState.Off)
+        private set
+    var wakePhrase by mutableStateOf("Hey Jarvis")
+        private set
+    var sensitivity by mutableStateOf(1) // 0 low, 1 normal, 2 high
+        private set
+    var hfNotice by mutableStateOf("")
+        private set
+
+    private val thresholds = floatArrayOf(0.2f, 0.12f, 0.07f)
+
+    val phaseLabel: String
+        get() = if (phase == Phase.Armed) "Say “$wakePhrase”" else phase.label
+
+    val phase: Phase
+        get() = when {
+            !connected -> Phase.Offline
+            handsFree && hfState == HfState.Capturing -> Phase.Listening
+            handsFree && hfState == HfState.Waiting && assistantState == "speaking" -> Phase.Speaking
+            handsFree && hfState == HfState.Waiting && assistantState == "thinking" -> Phase.Thinking
+            handsFree && hfState == HfState.Waiting -> Phase.Sending
+            handsFree && hfState == HfState.Armed -> Phase.Armed
+            talking && !micOpen -> Phase.Starting
+            talking -> Phase.Listening
+            sent && assistantState != "thinking" && assistantState != "speaking" -> Phase.Sending
+            assistantState == "thinking" -> Phase.Thinking
+            assistantState == "speaking" -> Phase.Speaking
+            else -> Phase.Idle
+        }
+
+    fun init(context: Context) {
+        if (started) return
+        started = true
+        appContext = context.applicationContext
+        prefs = appContext.getSharedPreferences("voice", Context.MODE_PRIVATE)
+        wakePhrase = prefs.getString("wake_phrase", wakePhrase) ?: wakePhrase
+        sensitivity = prefs.getInt("sensitivity", 1).coerceIn(0, 2)
+        if (prefs.getString("kw_key", "") == keywordKey()) keywordLines = prefs.getString("kw_lines", "") ?: ""
+        hapticsOn = prefs.getBoolean("haptics", true)
+        cameraTimerDefault = prefs.getBoolean("camera_timer", false)
+        handsFree = prefs.getBoolean("handsfree", false) &&
+            appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        Pairing.parse(prefs.getString("pairing", "") ?: "")?.let { pair(it, save = false) }
+    }
+
+    // ---- hands-free ----------------------------------------------------------------
+    private fun keywordKey() = "$wakePhrase|$sensitivity"
+
+    fun turnHandsFree(on: Boolean) {
+        handsFree = on
+        prefs.edit().putBoolean("handsfree", on).apply()
+        hfNotice = ""
+        if (on) {
+            startHandsFreeWhenReady()
+        } else {
+            appContext.stopService(Intent(appContext, ListenService::class.java))
+            detachHandsFree()
+        }
+    }
+
+    fun changeWakePhrase(phrase: String) {
+        val clean = phrase.trim().take(40)
+        if (clean.isBlank() || clean == wakePhrase) return
+        wakePhrase = clean
+        prefs.edit().putString("wake_phrase", clean).apply()
+        refreshKeywords()
+    }
+
+    fun changeSensitivity(level: Int) {
+        sensitivity = level.coerceIn(0, 2)
+        prefs.edit().putInt("sensitivity", sensitivity).apply()
+        refreshKeywords()
+    }
+
+    /** The PC turns the phrase into the wake model's token format. Asked again whenever the phrase or sensitivity changes. */
+    private fun refreshKeywords() {
+        keywordLines = ""
+        if (handsFree && connected) client?.getKeywords(wakePhrase, thresholds[sensitivity])
+    }
+
+    private fun startHandsFreeWhenReady() {
+        if (keywordLines.isNotBlank()) {
+            ContextCompat.startForegroundService(appContext, Intent(appContext, ListenService::class.java))
+        } else if (connected) {
+            client?.getKeywords(wakePhrase, thresholds[sensitivity])
+        } // otherwise it is requested as soon as the PC answers hello
+    }
+
+    /** Called by the listening service: build the detectors and start the loop. */
+    fun attachHandsFree(context: Context): Boolean {
+        if (keywordLines.isBlank()) return false
+        return try {
+            detachHandsFree()
+            val d = SherpaDetectors(context, keywordLines)
+            detectors = d
+            engine = HandsFreeEngine(d, sink).also { it.start() }
+            player.assistantAudio = true
+            true
+        } catch (t: Throwable) {
+            android.util.Log.e("VoiceAssistant", "hands-free could not start", t)
+            main.post { hfNotice = "Hands-free could not start: ${t.message}"; handsFree = false }
+            false
+        }
+    }
+
+    fun detachHandsFree() {
+        engine?.stop(); engine = null
+        detectors?.release(); detectors = null
+        player.assistantAudio = false
+        main.post { hfState = HfState.Off }
+    }
+
+    /** One 30 ms microphone frame from the listening service. */
+    fun onHandsFreeFrame(frame: ByteArray) {
+        val e = engine ?: return
+        e.process(frame)
+        if (e.state == HfState.Capturing && ++frames % 2 == 0) {
+            val v = rms(frame)
+            main.post { level = (level * 0.5f + v * 0.5f).coerceIn(0f, 1f) }
+        }
+    }
+
+    private val sink = object : HandsFreeSink {
+        override fun sendAudio(frame: ByteArray) { client?.sendAudio(frame) }
+        override fun wake() {
+            client?.wake()
+            main.post { partial = ""; notice = ""; hfNotice = ""; latency = ""; gotWords = false; sent = false }
+        }
+        override fun endOfSpeech() {
+            client?.endOfSpeech()
+            talkEndedAt = SystemClock.elapsedRealtime()
+            main.post { level = 0f; sent = true; main.removeCallbacks(noWordsCheck); main.postDelayed(noWordsCheck, 4000) }
+        }
+        override fun interrupt() { client?.interrupt() }
+        override fun flushPlayback() { player.flush() }
+        override fun changed() { main.post { hfState = engine?.state ?: HfState.Off } }
+        override fun noSpeech() { main.post { notice = "I didn't hear a question. Say “$wakePhrase”, then ask." } }
+    }
+
+    /** Remember the PC and connect to it. Returns false when the pasted text is not a pairing code. */
+    fun pairFromText(text: String): Boolean {
+        val parsed = Pairing.parse(text) ?: return false
+        pair(parsed, save = true)
+        return true
+    }
+
+    private fun pair(p: Pairing, save: Boolean) {
+        if (save) prefs.edit().putString("pairing", p.toJson()).apply()
+        pairing = p
+        wantConnected = true
+        connect()
+    }
+
+    fun forget() {
+        prefs.edit().remove("pairing").apply()
+        wantConnected = false
+        disconnect()
+        pairing = null
+        lines.clear()
+        status = "Not paired yet"
+    }
+
+    private fun connect() {
+        val p = pairing ?: return
+        disconnect()
+        status = "Connecting to ${p.name}…"
+        client = RemoteClient(p, this).also { it.connect() }
+    }
+
+    private fun disconnect() {
+        if (camera != null && camera?.id != "demo") main.post { closeCamera() } // a lost link cancels a real request, not the debug demo
+        engine?.onDisconnected()
+        mic?.stop(); mic = null
+        client?.close(); client = null
+        main.removeCallbacks(noWordsCheck)
+        connected = false
+        talking = false
+        micOpen = false
+        sent = false
+        level = 0f
+        waitingForListening = false
+    }
+
+    // ---- push to talk --------------------------------------------------------------
+    fun pressTalk() {
+        engine?.let { if (connected) it.manualPress(); return }
+        val c = client ?: return
+        if (!connected) return
+        if (assistantState == "speaking" || assistantState == "thinking") {
+            player.flush()
+            c.interrupt()
+        }
+        main.removeCallbacks(noWordsCheck)
+        talking = true
+        sent = false
+        gotWords = false
+        notice = ""
+        latency = ""
+        partial = ""
+        c.wake()
+        if (assistantState == "listening") startMic() else waitingForListening = true
+    }
+
+    fun releaseTalk() {
+        engine?.let { it.manualRelease(); return }
+        if (!talking) return
+        talking = false
+        waitingForListening = false
+        // keep recording a moment so the end of the last word is not clipped
+        main.postDelayed({
+            if (mic != null) {
+                mic?.stop(); mic = null
+                micOpen = false
+                level = 0f
+                client?.endOfSpeech()
+                talkEndedAt = SystemClock.elapsedRealtime()
+                sent = true
+                main.postDelayed(noWordsCheck, 4000)
+            }
+        }, 350)
+    }
+
+    private fun startMic() {
+        waitingForListening = false
+        if (mic != null) return
+        val m = Mic { frame ->
+            client?.sendAudio(frame)
+            if (++frames % 2 == 0) {
+                val rms = rms(frame)
+                main.post { level = (level * 0.5f + rms * 0.5f).coerceIn(0f, 1f) }
+            }
+        }
+        if (m.start()) {
+            mic = m
+            micOpen = true
+        } else {
+            status = "Could not open the microphone"
+        }
+    }
+
+    private fun rms(frame: ByteArray): Float {
+        var sum = 0.0
+        var i = 0
+        while (i + 1 < frame.size) {
+            val v = ((frame[i + 1].toInt() shl 8) or (frame[i].toInt() and 0xFF)).toShort().toInt() / 32768.0
+            sum += v * v
+            i += 2
+        }
+        return (sqrt(sum / (frame.size / 2)) * 6).toFloat() // speech sits low in the range, so scale it up for the ring
+    }
+
+    fun stopSpeaking() {
+        player.flush()
+        client?.interrupt()
+        engine?.onPcState("idle") // the engine goes back to waiting for the wake phrase
+        main.removeCallbacks(noWordsCheck)
+        sent = false
+        partial = ""
+        notice = ""
+    }
+
+    fun sendText(text: String) {
+        if (text.isNotBlank()) client?.sendText(text.trim())
+    }
+
+    fun answer(ok: Boolean) {
+        approval?.let { client?.confirmResult(it.id, ok) }
+        approval = null
+    }
+
+    // ---- messages from the PC ------------------------------------------------------
+    override fun onReady(message: JSONObject) {
+        main.post {
+            connected = true
+            status = "Connected to ${message.optString("name", pairing?.name ?: "your PC")}"
+            assistantState = message.optString("state", "idle")
+            if (settings != null) client?.getSettings() // the screen was open before the link dropped
+            if (handsFree && keywordLines.isBlank()) client?.getKeywords(wakePhrase, thresholds[sensitivity])
+            else if (handsFree && engine == null) startHandsFreeWhenReady()
+        }
+    }
+
+    override fun onMessage(message: JSONObject) {
+        main.post {
+            when (message.optString("type")) {
+                "state" -> {
+                    assistantState = message.optString("state")
+                    engine?.onPcState(assistantState)
+                    if (assistantState == "idle" || assistantState == "speaking") sent = false
+                    if (assistantState == "listening" && talking && waitingForListening) main.postDelayed({ if (talking) startMic() }, 100)
+                }
+                "partial" -> {
+                    partial = message.optString("text")
+                    if (partial.isNotBlank()) gotWords = true
+                }
+                "user_final" -> {
+                    partial = ""
+                    gotWords = true
+                    sent = false
+                    main.removeCallbacks(noWordsCheck)
+                    lines.add(Line(true, message.optString("text")))
+                    lines.add(Line(false, ""))
+                }
+                "keywords" -> {
+                    keywordLines = message.optString("lines")
+                    prefs.edit().putString("kw_lines", keywordLines).putString("kw_key", keywordKey()).apply()
+                    hfNotice = ""
+                    val d = detectors
+                    if (d != null) d.setKeywords(keywordLines) else if (handsFree) startHandsFreeWhenReady()
+                }
+                "keywords_error" -> {
+                    handsFree = false
+                    prefs.edit().putBoolean("handsfree", false).apply()
+                    hfNotice = "That wake phrase won't work (${message.optString("message")}). Try plain words, like “Hey Jarvis”."
+                }
+                "settings" -> settings = SettingsSnapshot.parse(message)
+                "setting_result" -> {
+                    val key = message.optString("key")
+                    val label = settings?.find(key)?.label ?: "Setting"
+                    val back = previousValues.remove(key)
+                    if (message.optBoolean("ok")) {
+                        settings?.let { current ->
+                            val kind = current.find(key)?.kind
+                            val saved: Any? = when (kind) {
+                                "toggle" -> message.optBoolean("value")
+                                "number" -> message.optDouble("value")
+                                else -> message.optString("value")
+                            }
+                            settings = current.withValue(key, saved).withRestartPending(message.optBoolean("restart"))
+                        }
+                        settingsNote = SettingsNote("$label: ${message.optString("message", "Saved.")}", undoKey = key, undoValue = back)
+                    } else {
+                        settings?.let { current ->
+                            val kind = current.find(key)?.kind
+                            val actual: Any? = when (kind) {
+                                "toggle" -> message.optBoolean("value")
+                                "number" -> message.optDouble("value")
+                                else -> message.optString("value")
+                            }
+                            settings = current.withValue(key, actual) // put back what the PC still has
+                        }
+                        settingsNote = SettingsNote(message.optString("message", "That did not work."), error = true)
+                    }
+                }
+                "camera_request" -> openCamera(CameraRequest(message.optString("id"), message.optString("prompt"), message.optBoolean("auto")))
+                "camera_close" -> if (camera?.id == message.optString("id")) closeCamera()
+                "assistant_delta" -> appendAssistant(message.optString("text"))
+                "confirm" -> approval = Approval(message.optString("id"), message.optString("prompt"))
+                "audio_start" -> {
+                    if (talkEndedAt != 0L) {
+                        latency = "Reply started ${"%.1f".format((SystemClock.elapsedRealtime() - talkEndedAt) / 1000.0)} s after you let go"
+                        talkEndedAt = 0L
+                    }
+                    player.start(message.optInt("sr", 16000))
+                }
+                "audio_flush" -> player.flush()
+                "error" -> lines.add(Line(false, "⚠ " + message.optString("message")))
+            }
+        }
+    }
+
+    // ---- camera ----------------------------------------------------------------------
+    fun activityStarted() { visibleActivities++ }
+    fun activityStopped() { visibleActivities = maxOf(0, visibleActivities - 1) }
+
+    /** The assistant wants a photo. Android only lets an app open its camera by itself while the app is on screen; otherwise show a notification to tap. */
+    private fun openCamera(request: CameraRequest) {
+        camera = request
+        val open = Intent(appContext, CameraActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (visibleActivities > 0) {
+            appContext.startActivity(open)
+            client?.cameraPending(request.id, true)
+        } else {
+            val manager = appContext.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(NotificationChannel("camera", "Camera requests", NotificationManager.IMPORTANCE_HIGH))
+            val tap = PendingIntent.getActivity(appContext, 2, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val note = android.app.Notification.Builder(appContext, "camera")
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .setContentTitle("Tap to take the photo")
+                .setContentText(request.prompt.ifBlank { "Your assistant wants to see something." })
+                .setContentIntent(tap).setAutoCancel(true).build()
+            runCatching { manager.notify(CAMERA_NOTIFICATION_ID, note) }
+            client?.cameraPending(request.id, false)
+        }
+    }
+
+    private fun closeCamera() {
+        camera = null
+        appContext.getSystemService(NotificationManager::class.java).cancel(CAMERA_NOTIFICATION_ID)
+    }
+
+    /** The user closed the camera, or it could not open. */
+    fun cancelCamera(reason: String) {
+        camera?.let { client?.cameraCancel(it.id, reason) }
+        closeCamera()
+    }
+
+    /** The prepared JPEG from the camera screen. */
+    fun sendPhoto(jpeg: ByteArray) {
+        val request = camera ?: return
+        client?.cameraPhoto(request.id, android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP))
+        main.post { closeCamera() }
+    }
+
+    private const val CAMERA_NOTIFICATION_ID = 2
+
+    private fun appendAssistant(text: String) {
+        val last = lines.lastIndex
+        if (last >= 0 && !lines[last].fromUser) lines[last] = Line(false, lines[last].text + text) else lines.add(Line(false, text))
+    }
+
+    override fun onAudio(pcm: ByteArray) = player.write(pcm)
+
+    override fun onClosed(reason: String) {
+        main.post {
+            disconnect()
+            if (wantConnected) {
+                status = "Can't reach your PC, retrying…"
+                main.postDelayed({ if (wantConnected && client == null) connect() }, 3000)
+            }
+        }
+    }
+}

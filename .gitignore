@@ -1,0 +1,20 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.kotlin/
+.DS_Store
+**/build/
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Not stored in git, see README.md ("Files that are not in git"):
+/app/libs/*.aar
+/app/src/main/assets/kws/*
+!/app/src/main/assets/kws/README.txt
