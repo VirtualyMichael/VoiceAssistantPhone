@@ -58,13 +58,18 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
     private var settingsPage by mutableStateOf<String?>(null) // null: the main screen; "": settings home; otherwise a section id
     private val askForMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { micAllowed = it }
     private val askForNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { Controller.turnHandsFree(true) }
+    private val askForMicThenHandsFree = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        micAllowed = granted
+        if (granted) switchHandsFree(true)
+    }
 
-    /** Hands-free needs the notification permission on Android 13+ (the listening notice is what keeps it allowed to run). */
+    /** Hands-free (switched in Settings) needs the microphone, and the notification permission on Android 13+ (the listening notice is what keeps it allowed to run). */
     private fun switchHandsFree(on: Boolean) {
         val needsAsk = on && android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         when {
             !on -> Controller.turnHandsFree(false)
+            !micAllowed -> askForMicThenHandsFree.launch(Manifest.permission.RECORD_AUDIO)
             needsAsk -> askForNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
             else -> Controller.turnHandsFree(true)
         }
@@ -117,7 +122,7 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
                                     }
                                 },
                             )
-                            else -> TalkScreen(micAllowed, { askForMic.launch(Manifest.permission.RECORD_AUDIO) }, ::switchHandsFree) { settingsPage = "" }
+                            else -> TalkScreen(micAllowed, { askForMic.launch(Manifest.permission.RECORD_AUDIO) }) { settingsPage = "" }
                         }
                     }
                 }
@@ -141,7 +146,7 @@ private fun ComponentActivity.pairFromDebugIntent(intent: android.content.Intent
 }
 
 @Composable
-private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, switchHandsFree: (Boolean) -> Unit, openSettings: () -> Unit) {
+private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, openSettings: () -> Unit) {
     val listState = rememberLazyListState()
     var typed by remember { mutableStateOf("") }
     val lines = Controller.lines
@@ -160,7 +165,8 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, switchHandsFr
                 OutlinedButton({ Controller.runDiagnosis(context) }, enabled = !Controller.diagnosing) { Text(if (Controller.diagnosing) "Checking…" else "Find out why") }
             }
         }
-        HandsFreeCard(micAllowed, askForMic, switchHandsFree)
+        // hands-free is switched on and set up in Settings (This phone); only a problem with it is worth showing here
+        if (Controller.hfNotice.isNotBlank()) Text(Controller.hfNotice, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(lines) { line -> Bubble(line) }
         }
@@ -266,48 +272,6 @@ private fun Bubble(line: Line) {
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             color = if (line.fromUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
         )
-    }
-}
-
-@Composable
-private fun HandsFreeCard(micAllowed: Boolean, askForMic: () -> Unit, switchHandsFree: (Boolean) -> Unit) {
-    var editing by remember { mutableStateOf(false) }
-    var phrase by remember(Controller.wakePhrase) { mutableStateOf(Controller.wakePhrase) }
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Column(Modifier.weight(1f)) {
-                Text("Hands-free", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    if (Controller.handsFree) "Say “${Controller.wakePhrase}”, then ask. Works with the screen off." else "Talk without touching the phone.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            androidx.compose.material3.Switch(
-                checked = Controller.handsFree,
-                onCheckedChange = { if (it && !micAllowed) askForMic() else switchHandsFree(it) },
-                enabled = Controller.connected || Controller.handsFree,
-            )
-        }
-        if (Controller.hfNotice.isNotBlank()) Text(Controller.hfNotice, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-        TextButton({ editing = !editing }) { Text(if (editing) "Hide wake phrase settings" else "Wake phrase settings") }
-        if (editing) {
-            OutlinedTextField(
-                phrase, { phrase = it }, Modifier.fillMaxWidth(), label = { Text("Wake phrase") }, singleLine = true,
-                supportingText = { Text("Plain words work best, like “Hey Jarvis”. Two or three syllables or more is more reliable.") },
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Sensitivity", style = MaterialTheme.typography.bodyMedium)
-                listOf("Low", "Normal", "High").forEachIndexed { i, name ->
-                    if (Controller.sensitivity == i) Button({ Controller.changeSensitivity(i) }) { Text(name) }
-                    else OutlinedButton({ Controller.changeSensitivity(i) }) { Text(name) }
-                }
-            }
-            Text("High hears you from further away but may start by mistake. Low is stricter.", style = MaterialTheme.typography.bodySmall)
-            Button({ Controller.changeWakePhrase(phrase) }, enabled = phrase.isNotBlank() && phrase.trim() != Controller.wakePhrase) { Text("Save wake phrase") }
-        }
     }
 }
 
