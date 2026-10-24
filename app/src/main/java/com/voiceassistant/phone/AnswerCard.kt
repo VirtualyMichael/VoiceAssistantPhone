@@ -106,11 +106,6 @@ fun AnswerCardView(card: AnswerCard, openSettings: (String) -> Unit) {
             Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(vertical = 4.dp)) {
                     Text("Sources", Modifier.padding(start = 12.dp, top = 4.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                    if (card.sources.size > SHOWN_SOURCES) {
-                        TextButton({ all = !all }, Modifier.padding(start = 4.dp)) {
-                            Text(if (all) "Show fewer" else "Show ${card.sources.size - SHOWN_SOURCES} more", style = MaterialTheme.typography.labelMedium)
-                        }
-                    }
                     shown.forEach { s ->
                         Row(
                             Modifier.fillMaxWidth().clickable { runCatching { uri.openUri(s.url) } }.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -122,6 +117,11 @@ fun AnswerCardView(card: AnswerCard, openSettings: (String) -> Unit) {
                                 Text(s.site, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                             }
                             Text("›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    if (card.sources.size > SHOWN_SOURCES) {
+                        TextButton({ all = !all }, Modifier.padding(start = 4.dp)) {
+                            Text(if (all) "Show fewer" else "Show ${card.sources.size - SHOWN_SOURCES} more", style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
