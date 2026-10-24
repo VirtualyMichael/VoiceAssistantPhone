@@ -515,6 +515,123 @@ object Controller : RemoteListener {
 
     fun clearSettingsQuestion() { settingsQuestion = ""; settingsQuestionAt = -1 }
 
+    // ---- things shared from other apps ---------------------------------------------------
+    /** What another app just shared, waiting for the user's question. */
+    var incomingShare by mutableStateOf<IncomingShare?>(null)
+        private set
+    /** While a share is on its way: what is happening ("Sending photo.jpg… 40%"), or the problem. */
+    var shareStatus by mutableStateOf("")
+        private set
+    var sharing by mutableStateOf(false)
+        private set
+    private val shareReplies = java.util.concurrent.ConcurrentHashMap<String, JSONObject>()
+
+    fun receiveShare(share: IncomingShare) { incomingShare = share; shareStatus = "" }
+
+    fun dismissShare() { if (!sharing) { incomingShare = null; shareStatus = "" } }
+
+    /** Send the shared files to the PC piece by piece, wait until each is attached there, then ask the question. */
+    fun sendShare(context: Context, question: String) {
+        val share = incomingShare ?: return
+        val link = client
+        if (link == null || !connected) { shareStatus = "Not connected to your PC."; return }
+        sharing = true
+        shareStatus = "Sending…"
+        Thread {
+            val saved = mutableListOf<String>()
+            val problems = mutableListOf<String>()
+            for ((n, item) in share.items.withIndex()) {
+                val id = java.util.UUID.randomUUID().toString().replace("-", "")
+                try {
+                    val prepared = SharePrep.open(context, item)
+                    prepared.stream.use { input ->
+                        val buffer = ByteArray(PIECE_BYTES)
+                        var seq = 0
+                        var sent = 0L
+                        while (true) {
+                            val read = input.readNBytesCompat(buffer)
+                            val last = sent + read >= prepared.size || read < buffer.size
+                            var waited = 0
+                            while (link.queuedBytes() > 3_000_000 && waited < 600 && client === link) { Thread.sleep(50); waited++ }
+                            if (client !== link || waited >= 600) throw IllegalStateException("The link to your PC was lost.")
+                            link.shareFile(id, prepared.name, prepared.mime, prepared.size, seq++, last,
+                                android.util.Base64.encodeToString(buffer, 0, read, android.util.Base64.NO_WRAP))
+                            sent += read
+                            val pct = if (prepared.size > 0) (sent * 100 / prepared.size).toInt() else 100
+                            main.post { shareStatus = "Sending ${item.kind} ${n + 1} of ${share.items.size}… $pct%" }
+                            if (last) break
+                        }
+                    }
+                    var waited = 0
+                    while (!shareReplies.containsKey(id) && waited < 1200 && client === link) { Thread.sleep(50); waited++ } // a minute for the PC to finish
+                    val reply = shareReplies.remove(id)
+                    if (reply?.optBoolean("ok") == true) saved += reply.optString("name") else problems += reply?.optString("message") ?: "${item.name} did not arrive."
+                } catch (e: SecurityException) {
+                    problems += "The app you shared from did not let this app open ${item.name}. Try saving it first, then share it again."
+                } catch (e: java.io.IOException) {
+                    problems += "Couldn't read ${item.name} (${e.message})."
+                } catch (e: Exception) {
+                    problems += e.message ?: "${item.name} could not be sent."
+                }
+            }
+            main.post {
+                sharing = false
+                if (share.items.isNotEmpty() && saved.isEmpty() && share.text.isBlank()) {
+                    shareStatus = problems.joinToString(" ")
+                    return@post
+                }
+                sendText(share.describe(saved) + question.trim().ifBlank { "What can you tell me about this?" })
+                incomingShare = null
+                shareStatus = if (problems.isEmpty()) "" else problems.joinToString(" ")
+            }
+        }.start()
+    }
+
+    private fun java.io.InputStream.readNBytesCompat(buffer: ByteArray): Int {
+        var total = 0
+        while (total < buffer.size) {
+            val n = read(buffer, total, buffer.size - total)
+            if (n < 0) break
+            total += n
+        }
+        return total
+    }
+
+    private const val PIECE_BYTES = 512 * 1024
+
+    // ---- things the assistant asks the phone to do --------------------------------------------
+    /** An action waiting for the user's yes or no (an alarm, a timer, a calendar event). */
+    var pendingAction by mutableStateOf<PhoneAction?>(null)
+        private set
+
+    private fun receiveAction(action: PhoneAction) {
+        if (!action.known) { client?.phoneActionResult(action.id, false, "this phone app does not support '${action.action}' yet"); return }
+        pendingAction = action
+        if (visibleActivities == 0) { // the screen is off or another app is in front: a notification brings the question up
+            val manager = appContext.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(NotificationChannel("actions", "Requests from your assistant", NotificationManager.IMPORTANCE_HIGH))
+            val open = Intent(appContext, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            val tap = PendingIntent.getActivity(appContext, 3, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val note = android.app.Notification.Builder(appContext, "actions")
+                .setSmallIcon(android.R.drawable.ic_popup_reminder)
+                .setContentTitle("Your assistant is asking")
+                .setContentText(action.describe())
+                .setContentIntent(tap).setAutoCancel(true).build()
+            runCatching { manager.notify(ACTION_NOTIFICATION_ID, note) }
+        }
+    }
+
+    fun answerAction(context: Context, ok: Boolean) {
+        val action = pendingAction ?: return
+        pendingAction = null
+        appContext.getSystemService(NotificationManager::class.java).cancel(ACTION_NOTIFICATION_ID)
+        if (!ok) { client?.phoneActionResult(action.id, false, "declined"); return }
+        val (done, message) = PhoneAction.perform(context, action)
+        client?.phoneActionResult(action.id, done, message)
+    }
+
+    private const val ACTION_NOTIFICATION_ID = 3
+
     /** The assistant's reply to [settingsQuestion] so far ("" until it starts answering). */
     val settingsAnswer: String
         get() = if (settingsQuestionAt < 0) "" else lines.drop(settingsQuestionAt).lastOrNull { !it.fromUser }?.text.orEmpty()
@@ -639,6 +756,8 @@ object Controller : RemoteListener {
                     ),
                 )
                 "camera_close" -> if (camera?.id == message.optString("id")) closeCamera()
+                "share_saved" -> shareReplies[message.optString("id")] = message
+                "phone_action" -> receiveAction(PhoneAction(message.optString("id"), message.optString("action"), message.optJSONObject("args") ?: JSONObject()))
                 "assistant_delta" -> appendAssistant(message.optString("text"))
                 "confirm" -> approval = Approval(message.optString("id"), message.optString("prompt"))
                 "audio_start" -> {

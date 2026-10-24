@@ -12,6 +12,10 @@ and plays the spoken reply. Nothing leaves your own devices unless you chose a c
 - **Camera**: when you ask "what am I looking at?", the assistant opens the phone's camera (0.5×, 1×, 2×, 5× buttons and a smooth zoom
   slider, tap to focus, optional 3 s timer); the PC describes the photo.
 - **Approvals**: confirmation questions from the assistant can be answered on the phone.
+- **Share to the assistant**: share pictures, videos, PDFs, text or links from any app ("Ask the assistant" in the share sheet), pick or type a
+  question, and the file is attached on the PC for the assistant to read.
+- **Phone actions**: the assistant can set alarms and timers and add calendar events on the phone. Each one is shown first and only happens
+  if you tap Yes; calendar events open in your calendar app to save.
 - **Settings**: every setting of the assistant that is safe to change remotely, searchable, with a "?" help line on each. Safety settings
   are locked unless the PC owner allows them on the PC, and then still ask for the phone's fingerprint or PIN.
 - **Phone-only settings**: hands-free, wake phrase and sensitivity, camera timer, vibration.

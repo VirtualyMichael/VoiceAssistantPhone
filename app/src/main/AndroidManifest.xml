@@ -10,10 +10,14 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" /> <!-- to see whether a VPN such as Tailscale is on -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" /> <!-- alarms and timers the user agreed to -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <queries>
         <package android:name="com.tailscale.ipn" /> <!-- lets the setup check whether Tailscale is installed -->
+        <intent> <action android:name="android.intent.action.SET_ALARM" /> </intent>
+        <intent> <action android:name="android.intent.action.SET_TIMER" /> </intent>
+        <intent> <action android:name="android.intent.action.INSERT" /> <data android:mimeType="vnd.android.cursor.dir/event" /> </intent>
     </queries>
 
     <!-- The link to the PC is a plain ws:// connection, but it only ever runs inside Tailscale's encrypted tunnel. -->
@@ -37,6 +41,22 @@
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- "Share" from any app: pictures, videos, PDFs, text and links go to the assistant with a question -->
+            <intent-filter android:label="Ask the assistant">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="application/pdf" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+            <intent-filter android:label="Ask the assistant">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="application/pdf" />
             </intent-filter>
         </activity>
 

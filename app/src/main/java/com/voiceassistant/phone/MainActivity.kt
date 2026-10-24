@@ -73,6 +73,15 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         pairFromDebugIntent(intent)
+        takeShare(intent)
+    }
+
+    /** "Share" from another app opened us: hold on to it until the user asks their question. */
+    private fun takeShare(intent: android.content.Intent?) {
+        IncomingShare.from(intent, contentResolver)?.let {
+            Controller.receiveShare(it)
+            settingsPage = null
+        }
     }
 
     override fun onStart() { super.onStart(); Controller.activityStarted() }
@@ -83,12 +92,15 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
         enableEdgeToEdge()
         Controller.init(this)
         pairFromDebugIntent(intent)
+        if (savedInstanceState == null) takeShare(intent)
         micAllowed = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         if (!micAllowed) askForMic.launch(Manifest.permission.RECORD_AUDIO)
         setContent {
             VoiceAssistantPhoneTheme {
                 BackHandler(enabled = settingsPage != null) { settingsPage = if (settingsPage.isNullOrEmpty()) null else "" }
                 DiagnosisDialog()
+                Controller.pendingAction?.let { PhoneActionDialog(it) }
+                if (Controller.pairing != null && !Controller.setupActive) Controller.incomingShare?.let { ShareSheet(it) }
                 Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
                     Box(Modifier.padding(padding).padding(horizontal = 16.dp)) {
                         val page = settingsPage
@@ -252,6 +264,7 @@ private fun Bubble(line: Line) {
                 .clip(RoundedCornerShape(16.dp))
                 .background(if (line.fromUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
+            color = if (line.fromUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

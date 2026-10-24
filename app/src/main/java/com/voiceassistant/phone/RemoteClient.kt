@@ -121,4 +121,8 @@ class RemoteClient(private val target: Target, private val listener: RemoteListe
     fun setSetting(key: String, value: Any) = send(JSONObject().put("type", "set_setting").put("key", key).put("value", value))
     fun sendText(text: String) = send(JSONObject().put("type", "text").put("text", text))
     fun confirmResult(id: String, ok: Boolean) = send(JSONObject().put("type", "confirm_result").put("id", id).put("ok", ok))
+    fun shareFile(id: String, name: String, mime: String, total: Long, seq: Int, last: Boolean, dataBase64: String) = send(
+        JSONObject().put("type", "share_file").put("id", id).put("name", name).put("mime", mime).put("total", total).put("seq", seq).put("last", last).put("data_b64", dataBase64),
+    )
+    fun phoneActionResult(id: String, ok: Boolean, message: String) = send(JSONObject().put("type", "phone_action_result").put("id", id).put("ok", ok).put("message", message))
 }
