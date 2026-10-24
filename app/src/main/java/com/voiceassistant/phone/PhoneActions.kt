@@ -23,10 +23,15 @@ data class PhoneAction(val id: String, val action: String, val args: JSONObject)
         "set_timer" -> "Start a ${duration(args.optInt("seconds"))} timer" + label() + "?"
         "add_event" -> "Add “${args.optString("title")}” to your calendar on ${pretty(args.optString("start"))}" +
             (args.optString("location").takeIf { it.isNotBlank() }?.let { " at $it" } ?: "") + "?"
+        "send_text" -> "Text ${args.optString("to")}: “${args.optString("message")}”"
+        "call" -> "Call ${args.optString("to")}?"
         else -> "The assistant asked for something this app does not know how to do yet."
     }
 
-    val known: Boolean get() = action in setOf("set_alarm", "set_timer", "add_event")
+    val known: Boolean get() = action in setOf("set_alarm", "set_timer", "add_event", "send_text", "call", "read_notifications")
+
+    /** Texts and calls go to someone: the user picks the number before agreeing. */
+    val needsRecipient: Boolean get() = action == "send_text" || action == "call"
 
     private fun label() = args.optString("label").takeIf { it.isNotBlank() }?.let { " (“$it”)" } ?: ""
 
@@ -51,10 +56,20 @@ data class PhoneAction(val id: String, val action: String, val args: JSONObject)
             "thu" to Calendar.THURSDAY, "fri" to Calendar.FRIDAY, "sat" to Calendar.SATURDAY,
         )
 
-        /** Carry out an action the user agreed to. Returns (done, what to tell the assistant). */
-        fun perform(context: Context, a: PhoneAction): Pair<Boolean, String> = runCatching {
+        /** Carry out an action the user agreed to; [number] is who they picked for a text or call. Returns (done, what to tell the assistant). */
+        fun perform(context: Context, a: PhoneAction, number: String? = null): Pair<Boolean, String> = runCatching {
             val args = a.args
             when (a.action) {
+                "send_text" -> {
+                    val to = number ?: return@runCatching false to "no_contact"
+                    start(context, Intent(Intent.ACTION_SENDTO, android.net.Uri.parse("smsto:" + android.net.Uri.encode(to))).putExtra("sms_body", args.optString("message")))
+                    true to "The messaging app opened with the text to ${args.optString("to")} filled in; the user taps send there."
+                }
+                "call" -> {
+                    val to = number ?: return@runCatching false to "no_contact"
+                    start(context, Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:" + android.net.Uri.encode(to))))
+                    true to "The phone's dialler opened with ${args.optString("to")}'s number; the user taps call there."
+                }
                 "set_alarm" -> {
                     val intent = Intent(AlarmClock.ACTION_SET_ALARM)
                         .putExtra(AlarmClock.EXTRA_HOUR, args.optInt("hour")).putExtra(AlarmClock.EXTRA_MINUTES, args.optInt("minute"))

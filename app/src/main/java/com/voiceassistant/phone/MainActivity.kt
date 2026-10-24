@@ -59,6 +59,8 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
     private var settingsPage by mutableStateOf<String?>(null) // null: the main screen; "": settings home; otherwise a section id
     private val askForMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { micAllowed = it }
     private val askForNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { Controller.turnHandsFree(true) }
+    private var contactsAllowed by mutableStateOf(false) // texts and calls look names up in the phone's contacts
+    private val askForContacts = registerForActivityResult(ActivityResultContracts.RequestPermission()) { contactsAllowed = it }
     private val askForMicThenHandsFree = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         micAllowed = granted
         if (granted) switchHandsFree(true)
@@ -100,12 +102,13 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
         pairFromDebugIntent(intent)
         if (savedInstanceState == null) takeShare(intent)
         micAllowed = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        contactsAllowed = Contacts.allowed(this)
         if (!micAllowed) askForMic.launch(Manifest.permission.RECORD_AUDIO)
         setContent {
             VoiceAssistantPhoneTheme {
                 BackHandler(enabled = settingsPage != null) { settingsPage = if (settingsPage.isNullOrEmpty()) null else "" }
                 DiagnosisDialog()
-                Controller.pendingAction?.let { PhoneActionDialog(it) }
+                Controller.pendingAction?.let { PhoneActionDialog(it, { askForContacts.launch(Manifest.permission.READ_CONTACTS) }, contactsAllowed) }
                 if (Controller.pairing != null && !Controller.setupActive) Controller.incomingShare?.let { ShareSheet(it) }
                 Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
                     Box(Modifier.padding(padding).padding(horizontal = 16.dp)) {

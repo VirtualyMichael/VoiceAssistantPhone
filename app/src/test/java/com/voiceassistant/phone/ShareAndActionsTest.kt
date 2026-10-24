@@ -41,6 +41,38 @@ class ShareAndActionsTest {
     }
 
     @Test
+    fun numbersAndNamesAreToldApart() {
+        assertTrue(Contacts.isNumber("+1 (555) 010-2030"))
+        assertTrue(Contacts.isNumber("555 0102"))
+        assertFalse(Contacts.isNumber("Mom"))
+        assertFalse(Contacts.isNumber("Room 101"))
+    }
+
+    @Test
+    fun exactNamesAndMobileNumbersComeFirstAndEachNumberOnce() {
+        val mobile = android.provider.ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+        val home = android.provider.ContactsContract.CommonDataKinds.Phone.TYPE_HOME
+        val ranked = Contacts.rank(listOf(
+            ContactMatch("Mom's work", "555-1", "Work") to home,
+            ContactMatch("Mom", "555-2", "Home") to home,
+            ContactMatch("Mom", "555-3", "Mobile") to mobile,
+            ContactMatch("Mom", "5553", "Mobile") to mobile,
+        ), "mom")
+        assertEquals(listOf("555-3", "555-2", "555-1"), ranked.map { it.number })
+    }
+
+    @Test
+    fun textsAndCallsNeedSomeoneAndNotificationsAreKnown() {
+        val text = PhoneAction("5", "send_text", JSONObject().put("to", "Mom").put("message", "Running late"))
+        assertTrue(text.needsRecipient && text.known)
+        assertEquals("Text Mom: “Running late”", text.describe())
+        assertTrue(PhoneAction("6", "call", JSONObject().put("to", "Dad")).needsRecipient)
+        assertTrue(PhoneAction("7", "read_notifications", JSONObject()).known)
+        assertEquals("5 min ago", NotificationReader.ago(5 * 60_000L))
+        assertEquals("2 h ago", NotificationReader.ago(2 * 3_600_000L))
+    }
+
+    @Test
     fun actionsAreDescribedPlainlyBeforeTheUserAgrees() {
         val alarm = PhoneAction("1", "set_alarm", JSONObject().put("hour", 7).put("minute", 5).put("label", "Gym").put("days", JSONArray(listOf("mon", "fri"))))
         assertEquals("Set an alarm for 07:05 (“Gym”), every Mon, Fri?", alarm.describe())

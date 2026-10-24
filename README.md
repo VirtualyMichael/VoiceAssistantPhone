@@ -14,8 +14,11 @@ and plays the spoken reply. Nothing leaves your own devices unless you chose a c
 - **Approvals**: confirmation questions from the assistant can be answered on the phone.
 - **Share to the assistant**: share pictures, videos, PDFs, text or links from any app ("Ask the assistant" in the share sheet), pick or type a
   question, and the file is attached on the PC for the assistant to read.
-- **Phone actions**: the assistant can set alarms and timers and add calendar events on the phone. Each one is shown first and only happens
-  if you tap Yes; calendar events open in your calendar app to save.
+- **Phone actions**: the assistant can set alarms and timers, add calendar events, write texts and start calls on the phone. Each one is
+  shown first and only happens if you tap Yes; events, texts and calls open in your own calendar, messaging app or dialler, where you save,
+  send or call yourself. Names ("text Mom") are looked up in the phone's contacts (asked for the first time) and never leave the phone.
+- **Notifications**: with "Read my notifications" on (Settings, This phone) and Android's notification access given, the assistant can
+  read the notifications on the phone when you ask ("what did I miss?").
 - **Settings**: every setting of the assistant that is safe to change remotely, searchable, with a "?" help line on each. Safety settings
   are locked unless the PC owner allows them on the PC, and then still ask for the phone's fingerprint or PIN.
 - **Phone-only settings**: hands-free, wake phrase and sensitivity, camera timer, vibration.

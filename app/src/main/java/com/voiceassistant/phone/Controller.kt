@@ -161,8 +161,17 @@ object Controller : RemoteListener {
                 value = cameraTimerDefault, default = false, sectionTitle = where),
             SettingItem("phone.haptics", "Vibrate on buttons", "A short buzz when you press Talk and when the microphone opens.", "toggle",
                 value = hapticsOn, default = true, sectionTitle = where),
+            SettingItem("phone.notifications",
+                if (readNotifications && !NotificationReader.accessGranted(appContext)) "Read my notifications (needs access: tap to allow)" else "Read my notifications",
+                "Lets the assistant read the notifications on this phone when you ask, for example “what did I miss?”. They go to your PC only, and only when you ask. " +
+                    "Android also needs notification access for this app; turning this on opens that page.",
+                "toggle", value = readNotifications && NotificationReader.accessGranted(appContext), default = false, sectionTitle = where),
         )
     }
+
+    /** The user allows the assistant to read this phone's notifications (Android's notification access is needed as well). */
+    var readNotifications by mutableStateOf(false)
+        private set
 
     /** Changes to [phoneItems] (hands-free goes through the screen, because it may need to ask for permissions). */
     fun changePhoneSetting(key: String, value: Any) {
@@ -171,6 +180,16 @@ object Controller : RemoteListener {
             "phone.sensitivity" -> changeSensitivity(value.toString().toIntOrNull() ?: 1)
             "phone.camera_timer" -> { cameraTimerDefault = value == true; prefs.edit().putBoolean("camera_timer", cameraTimerDefault).apply() }
             "phone.haptics" -> { hapticsOn = value == true; prefs.edit().putBoolean("haptics", hapticsOn).apply() }
+            "phone.notifications" -> {
+                readNotifications = value == true
+                prefs.edit().putBoolean("read_notifications", readNotifications).apply()
+                if (readNotifications && !NotificationReader.accessGranted(appContext)) {
+                    showSettingsNote("Turn on notification access for Voice Assistant, then come back.")
+                    runCatching {
+                        appContext.startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                }
+            }
         }
     }
 
@@ -242,6 +261,7 @@ object Controller : RemoteListener {
         if (prefs.getString("kw_key", "") == keywordKey()) keywordLines = prefs.getString("kw_lines", "") ?: ""
         hapticsOn = prefs.getBoolean("haptics", true)
         cameraTimerDefault = prefs.getBoolean("camera_timer", false)
+        readNotifications = prefs.getBoolean("read_notifications", false)
         handsFree = prefs.getBoolean("handsfree", false) &&
             appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val stored = Pairing.parse(prefs.getString("pairing", "") ?: "")
@@ -606,6 +626,12 @@ object Controller : RemoteListener {
 
     private fun receiveAction(action: PhoneAction) {
         if (!action.known) { client?.phoneActionResult(action.id, false, "this phone app does not support '${action.action}' yet"); return }
+        if (action.action == "read_notifications") { // the user allowed this once in Settings, so no question each time
+            val text = if (readNotifications && NotificationReader.accessGranted(appContext))
+                NotificationReader.read(appContext, action.args.optString("app"), action.args.optInt("limit", 10)) else null
+            client?.phoneActionResult(action.id, text != null, text ?: "notifications_off")
+            return
+        }
         pendingAction = action
         if (visibleActivities == 0) { // the screen is off or another app is in front: a notification brings the question up
             val manager = appContext.getSystemService(NotificationManager::class.java)
@@ -621,12 +647,13 @@ object Controller : RemoteListener {
         }
     }
 
-    fun answerAction(context: Context, ok: Boolean) {
+    /** The user's answer. [number] is who they picked for a text or call; [reason] says why not, when they did not agree. */
+    fun answerAction(context: Context, ok: Boolean, number: String? = null, reason: String = "declined") {
         val action = pendingAction ?: return
         pendingAction = null
         appContext.getSystemService(NotificationManager::class.java).cancel(ACTION_NOTIFICATION_ID)
-        if (!ok) { client?.phoneActionResult(action.id, false, "declined"); return }
-        val (done, message) = PhoneAction.perform(context, action)
+        if (!ok) { client?.phoneActionResult(action.id, false, reason); return }
+        val (done, message) = PhoneAction.perform(context, action, number)
         client?.phoneActionResult(action.id, done, message)
     }
 
