@@ -107,10 +107,10 @@ class RemoteClient(private val target: Target, private val listener: RemoteListe
     fun cameraPending(id: String, opened: Boolean) =
         send(JSONObject().put("type", "camera_pending").put("id", id).put("opened", opened))
     fun cameraPhoto(id: String, jpegBase64: String) = send(JSONObject().put("type", "camera_photo").put("id", id).put("jpeg_b64", jpegBase64))
-    fun cameraVideoBegin(id: String, count: Int, durationMs: Long) =
-        send(JSONObject().put("type", "camera_video_begin").put("id", id).put("count", count).put("duration_ms", durationMs))
-    fun cameraVideoFrame(id: String, index: Int, timeMs: Long, jpegBase64: String) =
-        send(JSONObject().put("type", "camera_video_frame").put("id", id).put("index", index).put("t_ms", timeMs).put("jpeg_b64", jpegBase64))
+    fun cameraVideoBegin(id: String, count: Int, durationMs: Long, detailCount: Int = 0) =
+        send(JSONObject().put("type", "camera_video_begin").put("id", id).put("count", count).put("duration_ms", durationMs).put("detail_count", detailCount))
+    fun cameraVideoFrame(id: String, index: Int, timeMs: Long, jpegBase64: String, detail: Boolean = false) =
+        send(JSONObject().put("type", "camera_video_frame").put("id", id).put("index", index).put("t_ms", timeMs).put("jpeg_b64", jpegBase64).put("detail", detail))
     fun cameraVideoAudio(id: String, pcmBase64: String) = send(JSONObject().put("type", "camera_video_audio").put("id", id).put("pcm_b64", pcmBase64))
     fun cameraVideoEnd(id: String) = send(JSONObject().put("type", "camera_video_end").put("id", id))
     /** Bytes waiting to be sent. OkHttp drops the connection past 16 MB, so a clip's frames are sent only while this is small. */

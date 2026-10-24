@@ -63,6 +63,13 @@ class VideoSamplerTest {
     }
 
     @Test
+    fun closeUpFramesAreSpreadEvenlyAcrossTheClip() {
+        assertEquals(listOf(2_000L, 6_000L, 10_000L), VideoSampler.detailTimesMs(12_000, 3))
+        assertEquals(emptyList<Long>(), VideoSampler.detailTimesMs(12_000, 0))
+        assertEquals(listOf(5_000L), VideoSampler.detailTimesMs(10_000, 1))
+    }
+
+    @Test
     fun framesAreShrunkToTheLevelsSizeAndNeverEnlarged() {
         assertEquals(640 to 360, VideoSampler.scaledSize(1280, 720, 640))
         assertEquals(360 to 640, VideoSampler.scaledSize(720, 1280, 640)) // a portrait clip

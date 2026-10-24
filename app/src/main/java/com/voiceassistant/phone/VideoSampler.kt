@@ -46,6 +46,34 @@ object VideoSampler {
         return indices.map { frames[it] }
     }
 
+    /** The moments for [count] close-up frames: the middle of each of [count] equal slices of the clip. */
+    fun detailTimesMs(durationMs: Long, count: Int): List<Long> {
+        if (count <= 0) return emptyList()
+        return (0 until count).map { i -> ((i + 0.5) * durationMs / count).toLong() }
+    }
+
+    /** A few frames at full detail (a bigger picture size, no data budget), so the PC can read small text and see what is held. */
+    fun sampleDetail(file: File, count: Int, edge: Int): List<SampledFrame> {
+        if (count <= 0) return emptyList()
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(file.absolutePath)
+            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: return emptyList()
+            return detailTimesMs(durationMs, count).mapNotNull { t ->
+                val bitmap = retriever.getFrameAtTime(t * 1000, MediaMetadataRetriever.OPTION_CLOSEST) ?: return@mapNotNull null
+                try {
+                    SampledFrame(t, jpeg(bitmap, edge))
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+        } catch (e: Exception) {
+            return emptyList() // the normal frames still go
+        } finally {
+            retriever.release()
+        }
+    }
+
     /** Size after scaling so the longer side is at most [maxEdge] (a smaller picture is left alone). */
     fun scaledSize(width: Int, height: Int, maxEdge: Int): Pair<Int, Int> = PhotoPrep.scaledSize(width, height, maxEdge)
 

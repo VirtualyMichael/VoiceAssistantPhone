@@ -248,7 +248,8 @@ class CameraActivity : ComponentActivity() {
             try {
                 val (frames, durationMs) = VideoSampler.sample(file, request.maxFrames, request.maxFps, request.maxEdge, request.maxBytes)
                 val sound = if (recordedSound) AudioExtract.extract(file) else null
-                Controller.sendVideo(request.id, frames, durationMs, sound)
+                val detail = VideoSampler.sampleDetail(file, request.detailFrames, request.detailEdge)
+                Controller.sendVideo(request.id, frames, durationMs, sound, detail)
                 runOnUiThread { finish() }
             } catch (e: Exception) {
                 android.util.Log.w("VoiceAssistant", "could not sample the clip", e)

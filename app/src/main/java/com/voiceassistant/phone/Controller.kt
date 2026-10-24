@@ -24,6 +24,7 @@ data class Approval(val id: String, val prompt: String)
 data class CameraRequest(
     val id: String, val prompt: String, val auto: Boolean,
     val mode: String = "photo", val maxSeconds: Int = 15, val maxFrames: Int = 100, val maxEdge: Int = 640, val maxFps: Float = 2f, val maxBytes: Long = 5_000_000L, val audio: Boolean = false,
+    val detailFrames: Int = 0, val detailEdge: Int = 1280,
 ) {
     val isVideo get() = mode == "video"
 }
@@ -614,6 +615,8 @@ object Controller : RemoteListener {
                         maxFps = message.optDouble("max_fps", 2.0).toFloat().coerceIn(0.1f, 10f),
                         maxBytes = message.optLong("max_bytes", 5_000_000L).coerceIn(500_000L, 65_000_000L),
                         audio = message.optBoolean("audio", false),
+                        detailFrames = message.optInt("detail_frames", 0).coerceIn(0, 8),
+                        detailEdge = message.optInt("detail_edge", 1280).coerceIn(640, 1920),
                     ),
                 )
                 "camera_close" -> if (camera?.id == message.optString("id")) closeCamera()
@@ -676,15 +679,22 @@ object Controller : RemoteListener {
     }
 
     /** The frames picked from a recorded clip. They go one message at a time, waiting whenever the link is busy, so a long high-quality clip never overflows its queue. */
-    fun sendVideo(requestId: String, frames: List<SampledFrame>, durationMs: Long, audio: ByteArray? = null) {
+    fun sendVideo(requestId: String, frames: List<SampledFrame>, durationMs: Long, audio: ByteArray? = null, detail: List<SampledFrame> = emptyList()) {
         val link = client ?: return
         Thread {
-            link.cameraVideoBegin(requestId, frames.size, durationMs)
+            link.cameraVideoBegin(requestId, frames.size, durationMs, detail.size)
             for ((i, f) in frames.withIndex()) {
                 var waited = 0
                 while (link.queuedBytes() > 2_000_000 && waited < 600 && client === link) { Thread.sleep(50); waited++ } // up to 30 s per frame
                 if (client !== link || waited >= 600) { main.post { cancelCamera("The link to your PC was lost while sending the video.") }; return@Thread }
                 link.cameraVideoFrame(requestId, i, f.timeMs, android.util.Base64.encodeToString(f.jpeg, android.util.Base64.NO_WRAP))
+            }
+            // a few extra frames at full detail, for reading small text and seeing what is held
+            for ((i, f) in detail.withIndex()) {
+                var waited = 0
+                while (link.queuedBytes() > 2_000_000 && waited < 600 && client === link) { Thread.sleep(50); waited++ }
+                if (client !== link || waited >= 600) { main.post { cancelCamera("The link to your PC was lost while sending the close-ups.") }; return@Thread }
+                link.cameraVideoFrame(requestId, i, f.timeMs, android.util.Base64.encodeToString(f.jpeg, android.util.Base64.NO_WRAP), detail = true)
             }
             // the sound, if it was asked for, in pieces of about 400 KB (a little over 12 seconds each)
             audio?.let { pcm ->
