@@ -1,0 +1,1 @@
+{"v":2,"host":"100.1.2.3","port":47830,"code":"ABCDEFGHJK","name":"MY-PC"}

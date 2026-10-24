@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -40,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
@@ -104,6 +106,7 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                        item { PcGroup(onClose) }
                         if (snapshot?.restartPending == true) item { Banner("Some changes apply when the assistant restarts.") }
                         if (snapshot != null && !snapshot.allowSafety) {
                             item { Banner("Safety settings are locked. To change them from your phone, turn on “Let my phone change safety settings” on the PC (General page).") }
@@ -286,4 +289,28 @@ private fun TextEditor(item: SettingItem, onSave: (Any) -> Unit) {
         }
         Button({ onSave(t) }, enabled = t != item.value && (t.isNotBlank() || item.key != "phone.wake_phrase")) { Text("Save") }
     }
+}
+
+@Composable
+private fun PcGroup(onClose: () -> Unit) {
+    val context = LocalContext.current
+    var confirmForget by remember { mutableStateOf(false) }
+    GroupTitle("Your PC")
+    Text(Controller.pairing?.let { "${it.name}  ·  ${it.host}" } ?: "Not paired", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(start = 4.dp))
+    Text(Controller.status, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp, bottom = 8.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton({ Controller.runDiagnosis(context) }, enabled = !Controller.diagnosing) { Text(if (Controller.diagnosing) "Checking…" else "Test the connection") }
+        OutlinedButton({ Controller.startSetup(); onClose() }) { Text("Run setup again") }
+    }
+    TextButton({ confirmForget = true }) { Text("Forget this PC", color = MaterialTheme.colorScheme.error) }
+    if (confirmForget) {
+        AlertDialog(
+            onDismissRequest = { confirmForget = false },
+            title = { Text("Forget this PC?") },
+            text = { Text("Your PC will take this phone off its list, so you'll need to pair again to use it.") },
+            confirmButton = { Button({ confirmForget = false; Controller.forget(); onClose() }) { Text("Forget") } },
+            dismissButton = { TextButton({ confirmForget = false }) { Text("Cancel") } },
+        )
+    }
+    HorizontalDivider()
 }

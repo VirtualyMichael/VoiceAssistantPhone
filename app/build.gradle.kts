@@ -51,6 +51,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.biometric:biometric:1.1.0") // the fingerprint or PIN check for safety settings
+    implementation("com.google.zxing:core:3.5.3") // reads the pairing QR code (Apache-2.0)
     implementation("androidx.camera:camera-core:1.4.2") // the in-app camera
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")

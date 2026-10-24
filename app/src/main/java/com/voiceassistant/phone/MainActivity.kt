@@ -42,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.draw.scale
@@ -87,11 +88,12 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
         setContent {
             VoiceAssistantPhoneTheme {
                 BackHandler(enabled = settingsPage != null) { settingsPage = if (settingsPage.isNullOrEmpty()) null else "" }
+                DiagnosisDialog()
                 Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
                     Box(Modifier.padding(padding).padding(horizontal = 16.dp)) {
                         val page = settingsPage
                         when {
-                            Controller.pairing == null -> PairScreen()
+                            Controller.pairing == null || Controller.setupActive -> SetupScreen()
                             page != null -> SettingsScreen(
                                 page = page,
                                 onNavigate = { settingsPage = it },
@@ -127,24 +129,6 @@ private fun ComponentActivity.pairFromDebugIntent(intent: android.content.Intent
 }
 
 @Composable
-private fun PairScreen() {
-    var text by remember { mutableStateOf("") }
-    var bad by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
-        Text("Connect to your PC", style = MaterialTheme.typography.headlineMedium)
-        Text(
-            "On your PC run:  python -m voice_assistant phone pair\nThen paste the code it prints here. (A QR scanner comes later.)",
-            Modifier.padding(vertical = 12.dp), style = MaterialTheme.typography.bodyMedium,
-        )
-        OutlinedTextField(
-            text, { text = it; bad = false }, Modifier.fillMaxWidth(), label = { Text("Pairing code") },
-            isError = bad, supportingText = { if (bad) Text("That doesn't look like a pairing code.") }, minLines = 3,
-        )
-        Button({ bad = !Controller.pairFromText(text) }, Modifier.padding(top = 12.dp)) { Text("Connect") }
-    }
-}
-
-@Composable
 private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, switchHandsFree: (Boolean) -> Unit, openSettings: () -> Unit) {
     val listState = rememberLazyListState()
     var typed by remember { mutableStateOf("") }
@@ -155,9 +139,13 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, switchHandsFr
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(Controller.status, style = MaterialTheme.typography.titleMedium)
-            Row {
-                TextButton(openSettings) { Text("Settings") }
-                TextButton({ Controller.forget() }) { Text("Forget PC") }
+            TextButton(openSettings) { Text("Settings") }
+        }
+        if (!Controller.connected) {
+            val context = LocalContext.current
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Not connected to your PC", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                OutlinedButton({ Controller.runDiagnosis(context) }, enabled = !Controller.diagnosing) { Text(if (Controller.diagnosing) "Checking…" else "Find out why") }
             }
         }
         HandsFreeCard(micAllowed, askForMic, switchHandsFree)
@@ -308,4 +296,27 @@ private fun HandsFreeCard(micAllowed: Boolean, askForMic: () -> Unit, switchHand
             Button({ Controller.changeWakePhrase(phrase) }, enabled = phrase.isNotBlank() && phrase.trim() != Controller.wakePhrase) { Text("Save wake phrase") }
         }
     }
+}
+
+/** The answer to "Find out why" / "Test the connection": the most likely cause, with a button for the fix. */
+@Composable
+private fun DiagnosisDialog() {
+    val d = Controller.diagnosis ?: return
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = { Controller.clearDiagnosis() },
+        title = { Text(if (d.ok) "All good" else "Here's the problem") },
+        text = { Text(d.message) },
+        confirmButton = {
+            when (d.fix) {
+                Fix.InstallTailscale -> Button({ Controller.clearDiagnosis(); Environment.installTailscale(context) }) { Text("Get Tailscale") }
+                Fix.OpenTailscale -> Button({ Controller.clearDiagnosis(); Environment.openTailscale(context) }) { Text("Open Tailscale") }
+                Fix.PairAgain -> Button({ Controller.clearDiagnosis(); Controller.startSetup() }) { Text("Pair again") }
+                else -> Button({ Controller.clearDiagnosis() }) { Text("OK") }
+            }
+        },
+        dismissButton = if (d.fix in listOf(Fix.InstallTailscale, Fix.OpenTailscale, Fix.PairAgain)) {
+            { TextButton({ Controller.clearDiagnosis() }) { Text("Not now") } }
+        } else null,
+    )
 }

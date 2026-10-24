@@ -9,7 +9,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" /> <!-- to see whether a VPN such as Tailscale is on -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <queries>
+        <package android:name="com.tailscale.ipn" /> <!-- lets the setup check whether Tailscale is installed -->
+    </queries>
 
     <!-- The link to the PC is a plain ws:// connection, but it only ever runs inside Tailscale's encrypted tunnel. -->
     <application

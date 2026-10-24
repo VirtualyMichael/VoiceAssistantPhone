@@ -87,6 +87,20 @@ object Controller : RemoteListener {
         private set
     val lines = mutableStateListOf<Line>()
 
+    /** True while the first-run setup guide is showing (also when run again from the settings). */
+    var setupActive by mutableStateOf(false)
+        private set
+    var pairBusy by mutableStateOf(false)
+        private set
+    var pairProblem by mutableStateOf("")
+        private set
+    var diagnosis by mutableStateOf<Diagnosis?>(null)
+        private set
+    var diagnosing by mutableStateOf(false)
+        private set
+    private var pendingRequest: PairRequest? = null
+    private var pcKnowsPhone = true
+
     /** The PC's settings, as last received. */
     var settings by mutableStateOf<SettingsSnapshot?>(null)
         private set
@@ -153,6 +167,24 @@ object Controller : RemoteListener {
         }
     }
 
+    /** Find the most likely reason the phone is not connected, for the "Test the connection" button. */
+    fun runDiagnosis(context: Context) {
+        if (diagnosing) return
+        diagnosing = true
+        Thread {
+            val p = pairing
+            val facts = Facts(
+                paired = p != null, connected = connected,
+                tailscaleInstalled = Environment.tailscaleInstalled(context), vpnActive = Environment.vpnActive(context),
+                pcKnowsPhone = pcKnowsPhone, pcReachable = p?.let { Environment.canReach(it.host, it.port) },
+            )
+            val result = ConnectionDoctor.diagnose(facts)
+            main.post { diagnosis = result; diagnosing = false }
+        }.start()
+    }
+
+    fun clearDiagnosis() { diagnosis = null }
+
     /** Debug builds only: lets `adb` open the camera screen without the assistant asking, to test it. */
     fun openDemoCamera() { camera = CameraRequest("demo", "Demo camera", false) }
 
@@ -205,7 +237,19 @@ object Controller : RemoteListener {
         cameraTimerDefault = prefs.getBoolean("camera_timer", false)
         handsFree = prefs.getBoolean("handsfree", false) &&
             appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        Pairing.parse(prefs.getString("pairing", "") ?: "")?.let { pair(it, save = false) }
+        val stored = Pairing.parse(prefs.getString("pairing", "") ?: "")
+        if (stored != null) prefs.edit().putBoolean("setup_done", true).apply() // someone who paired before the guide existed does not need it
+        setupActive = stored == null && !prefs.getBoolean("setup_done", false)
+        stored?.let { pair(it, save = false) }
+    }
+
+    fun startSetup() { pairProblem = ""; setupActive = true }
+
+    fun reportPairProblem(text: String) { pairBusy = false; pairProblem = text }
+
+    fun finishSetup() {
+        prefs.edit().putBoolean("setup_done", true).apply()
+        setupActive = false
     }
 
     // ---- hands-free ----------------------------------------------------------------
@@ -304,25 +348,46 @@ object Controller : RemoteListener {
 
     /** Remember the PC and connect to it. Returns false when the pasted text is not a pairing code. */
     fun pairFromText(text: String): Boolean {
-        val parsed = Pairing.parse(text) ?: return false
-        pair(parsed, save = true)
+        when (val input = PairingText.parse(text)) {
+            is PairingInput.Token -> pair(input.pairing, save = true)
+            is PairingInput.Code -> startPairing(PairRequest(input.host, input.port, input.code, input.name))
+            PairingInput.Invalid -> return false
+        }
         return true
     }
 
+    /** Redeem a one-time code. The PC answers with this phone's own token (see onPaired); a wrong or old code is not retried. */
+    private fun startPairing(request: PairRequest) {
+        disconnect()
+        wantConnected = false
+        pairProblem = ""
+        pairBusy = true
+        pendingRequest = request
+        status = "Pairing with ${request.name}…"
+        client = RemoteClient(request, this).also { it.connect() }
+    }
+
     private fun pair(p: Pairing, save: Boolean) {
-        if (save) prefs.edit().putString("pairing", p.toJson()).apply()
+        if (save) {
+            prefs.edit().putString("pairing", p.toJson()).apply()
+            finishSetup() // a PC paired with its permanent token (the command line, not the QR code) needs no guide
+        }
         pairing = p
         wantConnected = true
         connect()
     }
 
+    /** Remove this PC. The PC is told too, so it takes this phone off its list of paired phones. */
     fun forget() {
+        client?.forgetMe()
         prefs.edit().remove("pairing").apply()
         wantConnected = false
         disconnect()
         pairing = null
+        settings = null
         lines.clear()
         status = "Not paired yet"
+        startSetup()
     }
 
     private fun connect() {
@@ -434,8 +499,34 @@ object Controller : RemoteListener {
     }
 
     // ---- messages from the PC ------------------------------------------------------
+    override fun onPaired(message: JSONObject) {
+        main.post {
+            val request = pendingRequest ?: return@post
+            val p = Pairing(request.host, request.port, message.optString("token"), message.optString("name").ifBlank { request.name })
+            prefs.edit().putString("pairing", p.toJson()).apply()
+            pairing = p
+            pcKnowsPhone = true
+            wantConnected = true // this very connection carries on as the phone's normal link
+            pairBusy = false
+            pendingRequest = null
+        }
+    }
+
+    override fun onRefused(code: String, message: String) {
+        main.post {
+            pairBusy = false
+            pairProblem = ConnectionDoctor.refusal(code)
+            if (code == "not_paired") {
+                pcKnowsPhone = false
+                wantConnected = false // retrying with a token the PC does not know would only fail again
+            }
+            disconnect()
+        }
+    }
+
     override fun onReady(message: JSONObject) {
         main.post {
+            pcKnowsPhone = true
             connected = true
             status = "Connected to ${message.optString("name", pairing?.name ?: "your PC")}"
             assistantState = message.optString("state", "idle")
@@ -578,6 +669,10 @@ object Controller : RemoteListener {
 
     override fun onClosed(reason: String) {
         main.post {
+            if (pairBusy) {
+                pairBusy = false
+                if (pairProblem.isBlank()) pairProblem = "Couldn't reach your PC. Check that Tailscale is on for both devices, the PC is awake, and the phone link is turned on there."
+            }
             disconnect()
             if (wantConnected) {
                 status = "Can't reach your PC, retrying…"

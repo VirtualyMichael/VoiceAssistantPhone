@@ -10,8 +10,17 @@ import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-/** What the PC's pairing step gives us: where the PC is and the one-time token that proves this phone was paired. */
-data class Pairing(val host: String, val port: Int, val token: String, val name: String) {
+/** Where to connect, and how to prove who we are. */
+sealed interface Target {
+    val host: String
+    val port: Int
+}
+
+/** A one-time code from the PC's pairing screen; the PC answers with the phone's own permanent token. */
+data class PairRequest(override val host: String, override val port: Int, val code: String, val name: String) : Target
+
+/** A paired PC: where it is and the token that proves this phone was paired. */
+data class Pairing(override val host: String, override val port: Int, val token: String, val name: String) : Target {
     fun toJson(): String = JSONObject()
         .put("host", host).put("port", port).put("token", token).put("name", name).toString()
 
@@ -27,13 +36,15 @@ data class Pairing(val host: String, val port: Int, val token: String, val name:
 
 interface RemoteListener {
     fun onReady(message: JSONObject)
+    fun onPaired(message: JSONObject)
+    fun onRefused(code: String, message: String)
     fun onMessage(message: JSONObject)
     fun onAudio(pcm: ByteArray)
     fun onClosed(reason: String)
 }
 
 /** The WebSocket to the PC's assistant (see remote.py on the PC for the message list). */
-class RemoteClient(private val pairing: Pairing, private val listener: RemoteListener) {
+class RemoteClient(private val target: Target, private val listener: RemoteListener) {
     private val http = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -43,15 +54,25 @@ class RemoteClient(private val pairing: Pairing, private val listener: RemoteLis
     @Volatile private var closed = false
 
     fun connect() {
-        val request = Request.Builder().url("ws://${pairing.host}:${pairing.port}").build()
+        val request = Request.Builder().url("ws://${target.host}:${target.port}").build()
         socket = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send(JSONObject().put("type", "hello").put("token", pairing.token).put("device", android.os.Build.MODEL).toString())
+                val hello = JSONObject().put("type", "hello").put("device", android.os.Build.MODEL)
+                when (val t = target) {
+                    is Pairing -> hello.put("token", t.token)
+                    is PairRequest -> hello.put("pair_code", t.code)
+                }
+                webSocket.send(hello.toString())
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val message = try { JSONObject(text) } catch (e: Exception) { return }
-                if (message.optString("type") == "ready") listener.onReady(message) else listener.onMessage(message)
+                when (message.optString("type")) {
+                    "ready" -> listener.onReady(message)
+                    "paired" -> listener.onPaired(message)
+                    "error" -> if (message.has("code")) listener.onRefused(message.optString("code"), message.optString("message")) else listener.onMessage(message)
+                    else -> listener.onMessage(message)
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) = listener.onAudio(bytes.toByteArray())
@@ -87,6 +108,7 @@ class RemoteClient(private val pairing: Pairing, private val listener: RemoteLis
         send(JSONObject().put("type", "camera_pending").put("id", id).put("opened", opened))
     fun cameraPhoto(id: String, jpegBase64: String) = send(JSONObject().put("type", "camera_photo").put("id", id).put("jpeg_b64", jpegBase64))
     fun cameraCancel(id: String, reason: String) = send(JSONObject().put("type", "camera_cancel").put("id", id).put("reason", reason))
+    fun forgetMe() = send(JSONObject().put("type", "forget_me"))
     fun getSettings() = send(JSONObject().put("type", "get_settings"))
     fun setSetting(key: String, value: Any) = send(JSONObject().put("type", "set_setting").put("key", key).put("value", value))
     fun sendText(text: String) = send(JSONObject().put("type", "text").put("text", text))
