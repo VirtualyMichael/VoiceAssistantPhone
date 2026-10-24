@@ -18,3 +18,4 @@ local.properties
 /app/libs/*.aar
 /app/src/main/assets/kws/*
 !/app/src/main/assets/kws/README.txt
+!/app/libs/README.txt
