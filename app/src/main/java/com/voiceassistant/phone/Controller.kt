@@ -20,7 +20,13 @@ import kotlin.math.sqrt
 
 data class Line(val fromUser: Boolean, val text: String)
 data class Approval(val id: String, val prompt: String)
-data class CameraRequest(val id: String, val prompt: String, val auto: Boolean)
+/** The assistant's request for the camera. mode is "photo", or "video" with the limits below (the PC's quality level: normal, mid or high). */
+data class CameraRequest(
+    val id: String, val prompt: String, val auto: Boolean,
+    val mode: String = "photo", val maxSeconds: Int = 15, val maxFrames: Int = 100, val maxEdge: Int = 640, val maxFps: Float = 2f, val maxBytes: Long = 5_000_000L, val audio: Boolean = false,
+) {
+    val isVideo get() = mode == "video"
+}
 
 /** A short message at the bottom of the settings screen. [undoKey] is set when the change can be taken back. */
 data class SettingsNote(val text: String, val undoKey: String? = null, val undoValue: Any? = null, val error: Boolean = false)
@@ -598,7 +604,18 @@ object Controller : RemoteListener {
                         settingsNote = SettingsNote(message.optString("message", "That did not work."), error = true)
                     }
                 }
-                "camera_request" -> openCamera(CameraRequest(message.optString("id"), message.optString("prompt"), message.optBoolean("auto")))
+                "camera_request" -> openCamera(
+                    CameraRequest(
+                        message.optString("id"), message.optString("prompt"), message.optBoolean("auto"),
+                        mode = message.optString("mode", "photo"),
+                        maxSeconds = message.optInt("max_seconds", 15).coerceIn(3, 120),
+                        maxFrames = message.optInt("max_frames", 100).coerceIn(2, 500),
+                        maxEdge = message.optInt("max_edge", 640).coerceIn(320, 1920),
+                        maxFps = message.optDouble("max_fps", 2.0).toFloat().coerceIn(0.1f, 10f),
+                        maxBytes = message.optLong("max_bytes", 5_000_000L).coerceIn(500_000L, 65_000_000L),
+                        audio = message.optBoolean("audio", false),
+                    ),
+                )
                 "camera_close" -> if (camera?.id == message.optString("id")) closeCamera()
                 "assistant_delta" -> appendAssistant(message.optString("text"))
                 "confirm" -> approval = Approval(message.optString("id"), message.optString("prompt"))
@@ -632,7 +649,7 @@ object Controller : RemoteListener {
             val tap = PendingIntent.getActivity(appContext, 2, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             val note = android.app.Notification.Builder(appContext, "camera")
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
-                .setContentTitle("Tap to take the photo")
+                .setContentTitle(if (request.isVideo) "Tap to record the video" else "Tap to take the photo")
                 .setContentText(request.prompt.ifBlank { "Your assistant wants to see something." })
                 .setContentIntent(tap).setAutoCancel(true).build()
             runCatching { manager.notify(CAMERA_NOTIFICATION_ID, note) }
@@ -656,6 +673,34 @@ object Controller : RemoteListener {
         val request = camera ?: return
         client?.cameraPhoto(request.id, android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP))
         main.post { closeCamera() }
+    }
+
+    /** The frames picked from a recorded clip. They go one message at a time, waiting whenever the link is busy, so a long high-quality clip never overflows its queue. */
+    fun sendVideo(requestId: String, frames: List<SampledFrame>, durationMs: Long, audio: ByteArray? = null) {
+        val link = client ?: return
+        Thread {
+            link.cameraVideoBegin(requestId, frames.size, durationMs)
+            for ((i, f) in frames.withIndex()) {
+                var waited = 0
+                while (link.queuedBytes() > 2_000_000 && waited < 600 && client === link) { Thread.sleep(50); waited++ } // up to 30 s per frame
+                if (client !== link || waited >= 600) { main.post { cancelCamera("The link to your PC was lost while sending the video.") }; return@Thread }
+                link.cameraVideoFrame(requestId, i, f.timeMs, android.util.Base64.encodeToString(f.jpeg, android.util.Base64.NO_WRAP))
+            }
+            // the sound, if it was asked for, in pieces of about 400 KB (a little over 12 seconds each)
+            audio?.let { pcm ->
+                var offset = 0
+                while (offset < pcm.size) {
+                    var waited = 0
+                    while (link.queuedBytes() > 2_000_000 && waited < 600 && client === link) { Thread.sleep(50); waited++ }
+                    if (client !== link || waited >= 600) { main.post { cancelCamera("The link to your PC was lost while sending the sound.") }; return@Thread }
+                    val end = minOf(pcm.size, offset + 400_000)
+                    link.cameraVideoAudio(requestId, android.util.Base64.encodeToString(pcm.copyOfRange(offset, end), android.util.Base64.NO_WRAP))
+                    offset = end
+                }
+            }
+            link.cameraVideoEnd(requestId)
+            main.post { closeCamera() }
+        }.start()
     }
 
     private const val CAMERA_NOTIFICATION_ID = 2

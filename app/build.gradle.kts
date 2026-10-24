@@ -56,6 +56,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")
+    implementation("androidx.camera:camera-video:1.4.2") // recording clips for "watch this"
     implementation(files("libs/sherpa-onnx-2.0.0.aar")) // on-device wake word and voice detection (Apache-2.0)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     testImplementation(libs.junit)

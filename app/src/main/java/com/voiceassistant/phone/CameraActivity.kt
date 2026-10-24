@@ -15,6 +15,14 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
@@ -41,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -58,6 +67,9 @@ import java.util.concurrent.Executors
 /**
  * The camera the assistant opens when you ask "what am I looking at?": frame it, zoom, tap the shutter. The photo goes to the PC, which
  * describes it; the spoken answer plays on the main screen. The PC can also close it again (you said the wake phrase, or pressed Stop).
+ *
+ * For "watch this" it records a short clip instead (no sound), picks a handful of small frames from it on the phone ([VideoSampler], sized by the
+ * quality level the PC asked for) and sends only those, so the video itself never leaves the phone.
  */
 class CameraActivity : ComponentActivity() {
     private companion object {
@@ -67,6 +79,13 @@ class CameraActivity : ComponentActivity() {
 
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
+    private var videoCapture: VideoCapture<Recorder>? = null
+    private var recording: Recording? = null
+    private var discard = false
+    private var recordingMs by mutableLongStateOf(0L)
+    private var recordingOn by mutableStateOf(false)
+    private var sending by mutableStateOf(false)
+    private var recordedSound by mutableStateOf(false)
     private var previewView: PreviewView? = null
     private var cameraStarted = false
     private val worker = Executors.newSingleThreadExecutor()
@@ -110,6 +129,7 @@ class CameraActivity : ComponentActivity() {
 
     override fun onDestroy() {
         countdownJob?.let { window.decorView.removeCallbacks(it) }
+        if (recordingOn) { discard = true; recording?.stop() } // leaving the screen mid-recording throws the clip away
         worker.shutdown()
         super.onDestroy()
     }
@@ -122,11 +142,19 @@ class CameraActivity : ComponentActivity() {
         future.addListener({
             val provider = future.get()
             val preview = Preview.Builder().build().also { it.surfaceProvider = view.surfaceProvider }
-            val capture = ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build()
             provider.unbindAll()
-            val bound = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
+            val bound: Camera
+            if (Controller.camera?.isVideo == true) {
+                val recorder = Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HD, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD))).build()
+                val video = VideoCapture.withOutput(recorder)
+                bound = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, video)
+                videoCapture = video
+            } else {
+                val capture = ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build()
+                bound = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, capture)
+                imageCapture = capture
+            }
             camera = bound
-            imageCapture = capture
             bound.cameraInfo.zoomState.observe(this) { state ->
                 zoom = state.zoomRatio
                 minZoom = state.minZoomRatio
@@ -134,7 +162,7 @@ class CameraActivity : ComponentActivity() {
                 android.util.Log.i("VoiceAssistant", "camerax zoom range ${state.minZoomRatio}..${state.maxZoomRatio} now ${state.zoomRatio}")
             }
             logLenses()
-            if (Controller.camera?.auto == true) startCountdown()
+            if (Controller.camera?.auto == true && Controller.camera?.isVideo != true) startCountdown()
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -179,6 +207,63 @@ class CameraActivity : ComponentActivity() {
         countdownJob = tick
         window.decorView.postDelayed(tick, 1000)
     }
+
+    /** Start recording, or stop (the clip also stops by itself at the length the PC asked for). */
+    private fun toggleRecording() {
+        val request = Controller.camera ?: return
+        if (recordingOn) { recording?.stop(); return }
+        val capture = videoCapture ?: return
+        if (sending) return
+        val file = java.io.File(cacheDir, "clip-${System.currentTimeMillis()}.mp4")
+        recordingMs = 0L
+        val prepared = capture.output.prepareRecording(this, FileOutputOptions.Builder(file).build())
+        // sound only when the PC asked for it (Settings > AI > Video sound) and the microphone is allowed; the screen says so while it records
+        val withSound = request.audio && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        recordedSound = withSound
+        recording = (if (withSound) prepared.withAudioEnabled() else prepared)
+            .start(ContextCompat.getMainExecutor(this)) { event ->
+                when (event) {
+                    is VideoRecordEvent.Start -> recordingOn = true
+                    is VideoRecordEvent.Status -> {
+                        recordingMs = event.recordingStats.recordedDurationNanos / 1_000_000
+                        if (recordingMs >= request.maxSeconds * 1000L) recording?.stop()
+                    }
+                    is VideoRecordEvent.Finalize -> { recordingOn = false; recording = null; onClipFinished(file, request, event.hasError()) }
+                    else -> {}
+                }
+            }
+    }
+
+    private fun onClipFinished(file: java.io.File, request: CameraRequest, failed: Boolean) {
+        if (discard || Controller.camera?.id != request.id) { file.delete(); return }
+        if (failed && file.length() < 1000) {
+            file.delete()
+            Controller.cancelCamera("The video did not record.")
+            Toast.makeText(this, "The video did not record. Try again.", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+        sending = true
+        worker.execute {
+            try {
+                val (frames, durationMs) = VideoSampler.sample(file, request.maxFrames, request.maxFps, request.maxEdge, request.maxBytes)
+                val sound = if (recordedSound) AudioExtract.extract(file) else null
+                Controller.sendVideo(request.id, frames, durationMs, sound)
+                runOnUiThread { finish() }
+            } catch (e: Exception) {
+                android.util.Log.w("VoiceAssistant", "could not sample the clip", e)
+                runOnUiThread {
+                    Controller.cancelCamera("The video could not be read.")
+                    Toast.makeText(this, "The video could not be read. Try again.", Toast.LENGTH_SHORT).show()
+                    finish()
+                }
+            } finally {
+                file.delete()
+            }
+        }
+    }
+
+    private fun clock(ms: Long): String = "%d:%02d".format(ms / 60_000, (ms / 1000) % 60)
 
     private fun capture() {
         val capture = imageCapture ?: return
@@ -261,6 +346,13 @@ class CameraActivity : ComponentActivity() {
             if (countdown > 0) {
                 Text(countdown.toString(), Modifier.align(Alignment.Center), color = Color.White, fontSize = 96.sp)
             }
+            if (request?.isVideo == true && recordingOn) {
+                Text(
+                    "\u25CF ${clock(recordingMs)} / ${clock(request.maxSeconds * 1000L)}" + if (recordedSound) " \u00B7 with sound" else "",
+                    Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp).clip(CircleShape).background(Color(0xAAB00020)).padding(horizontal = 14.dp, vertical = 4.dp),
+                    color = Color.White, fontSize = 16.sp,
+                )
+            }
             Column(
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -268,7 +360,13 @@ class CameraActivity : ComponentActivity() {
             ) {
                 val ask = request?.prompt.orEmpty()
                 Text(
-                    if (ask.isBlank()) "Point at what you want to know about" else "“$ask”",
+                    when {
+                        request?.isVideo == true && sending -> "Picking frames and sending them…"
+                        request?.isVideo == true && recordingOn -> "Recording. Tap the button again to stop."
+                        request?.isVideo == true -> (if (ask.isBlank()) "Tap the red button to record" else "“$ask”") + " (up to ${request.maxSeconds} s" + (if (request.audio) ", with sound)" else ")")
+                        ask.isBlank() -> "Point at what you want to know about"
+                        else -> "“$ask”"
+                    },
                     color = Color.White, modifier = Modifier.padding(horizontal = 24.dp),
                 )
                 // the lenses a Pixel has: ultrawide 0.5×, main 1×, then the zoom lenses; the slider below slides smoothly between all of them
@@ -282,12 +380,17 @@ class CameraActivity : ComponentActivity() {
                 if (maxZoom > minZoom + 0.01f) ZoomSlider()
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                        OutlinedButton({ timerOn = !timerOn }) { Text(if (timerOn) "3 s: on" else "3 s timer", color = Color.White) }
+                        if (request?.isVideo != true) OutlinedButton({ timerOn = !timerOn }) { Text(if (timerOn) "3 s: on" else "3 s timer", color = Color.White) }
                     }
                     Box(
                         Modifier.size(80.dp).clip(CircleShape).border(4.dp, Color.White, CircleShape).padding(8.dp).clip(CircleShape)
-                            .background(if (busy) Color.Gray else Color.White)
-                            .pointerInput(busy) { detectTapGestures { if (!busy) { if (timerOn) startCountdown() else capture() } } },
+                            .background(if (busy || sending) Color.Gray else if (request?.isVideo == true) Color.Red else Color.White)
+                            .pointerInput(busy, recordingOn, sending) {
+                                detectTapGestures {
+                                    if (request?.isVideo == true) { if (!sending) toggleRecording() }
+                                    else if (!busy) { if (timerOn) startCountdown() else capture() }
+                                }
+                            },
                     )
                     Box(Modifier.weight(1f))
                 }
