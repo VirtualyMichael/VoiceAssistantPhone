@@ -191,6 +191,9 @@ object Controller : RemoteListener {
                 "Lets the assistant play, pause, skip and set the volume of whatever is playing on this phone, such as YouTube Music, and start a song you ask for. " +
                     "Android calls this notification access, and turning this on opens that page.",
                 "toggle", value = mediaControl && NotificationReader.accessGranted(appContext), default = false, sectionTitle = where),
+            SettingItem("phone.update_auto", "Check for app updates",
+                "Once a day, asks GitHub which version of this app is newest and tells you if there is one. Nothing about you is sent, and nothing is installed without you.",
+                "toggle", value = updateAuto, default = true, sectionTitle = where),
             SettingItem("phone.share_details", "Tell the assistant about photos and videos",
                 "When you send a picture or video, also send when it was taken, with what camera and how long it is, so you can ask things like “when was this taken?”. It goes to your PC only.",
                 "toggle", value = shareDetails, default = true, sectionTitle = where),
@@ -239,6 +242,7 @@ object Controller : RemoteListener {
                     }
                 }
             }
+            "phone.update_auto" -> changeUpdateAuto(value == true)
             "phone.watch" -> changeWatch(value == true)
             "phone.offline" -> if (offlineProgress < 0) changeOfflineHelper(value == true)
             "phone.notifications" -> {
@@ -349,6 +353,7 @@ object Controller : RemoteListener {
         cameraTimerDefault = prefs.getBoolean("camera_timer", false)
         readNotifications = prefs.getBoolean("read_notifications", false)
         mediaControl = prefs.getBoolean("media_control", false)
+        updateAuto = prefs.getBoolean("update_auto", true)
         hfPaused = prefs.getBoolean("hf_paused", false)
         offlineHelperOn = prefs.getBoolean("offline_helper", false) && OnDeviceModel.available(appContext)
         handsFree = prefs.getBoolean("handsfree", false) &&
@@ -357,6 +362,7 @@ object Controller : RemoteListener {
         if (stored != null) prefs.edit().putBoolean("setup_done", true).apply() // someone who paired before the guide existed does not need it
         setupActive = stored == null && !prefs.getBoolean("setup_done", false)
         stored?.let { pair(it, save = false) }
+        checkForUpdates(manual = false)
     }
 
     fun startSetup() { pairProblem = ""; setupActive = true }
@@ -1149,6 +1155,46 @@ object Controller : RemoteListener {
     }
 
     // ---- camera ----------------------------------------------------------------------
+    // ---- updates ----------------------------------------------------------------------------------
+    /** A newer release than this one, when the last check found one. */
+    var updateAvailable by mutableStateOf<Updates.Release?>(null)
+        private set
+    var updateStatus by mutableStateOf("")
+        private set
+    var updateAuto by mutableStateOf(true)
+        private set
+    private var updateChecking = false
+
+    fun installedVersion(): String = runCatching { appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName.orEmpty() }.getOrDefault("")
+
+    /** Ask GitHub which version is newest. [manual] shows the answer even when there is nothing new; the automatic check runs at most once a day. */
+    fun checkForUpdates(manual: Boolean) {
+        if (updateChecking) return
+        if (!manual && (!updateAuto || System.currentTimeMillis() - prefs.getLong("update_checked", 0L) < 24 * 3_600_000L)) return
+        updateChecking = true
+        if (manual) updateStatus = "Checking…"
+        Thread {
+            val latest = Updates.fetchLatest()
+            main.post {
+                updateChecking = false
+                if (latest != null) prefs.edit().putLong("update_checked", System.currentTimeMillis()).apply()
+                val current = installedVersion()
+                updateAvailable = latest?.takeIf { Updates.newer(it.version, current) }
+                if (manual || updateAvailable != null) updateStatus = when {
+                    latest == null -> "Couldn't reach GitHub. Check your connection."
+                    updateAvailable != null -> "Version ${latest.version} is available (you have $current)."
+                    else -> "You have the newest version ($current)."
+                }
+            }
+        }.start()
+    }
+
+    fun changeUpdateAuto(on: Boolean) {
+        updateAuto = on
+        prefs.edit().putBoolean("update_auto", on).apply()
+        if (!on) updateAvailable = null
+    }
+
     fun activityStarted() { visibleActivities++ }
     fun activityStopped() { visibleActivities = maxOf(0, visibleActivities - 1) }
 

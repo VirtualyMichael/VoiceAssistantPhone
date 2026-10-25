@@ -64,5 +64,10 @@ dependencies {
     implementation("androidx.wear.compose:compose-material:1.4.1") // Compose for Wear OS: round-screen buttons, lists and text
     implementation("androidx.wear.compose:compose-foundation:1.4.1")
     implementation("com.google.android.gms:play-services-wearable:19.0.0") // the link to the phone
+    implementation("androidx.wear.tiles:tiles:1.4.1") // the one-tap Ask tile
+    implementation("androidx.concurrent:concurrent-futures:1.2.0")
+    implementation("androidx.wear.protolayout:protolayout:1.2.1")
+    implementation("androidx.wear.protolayout:protolayout-material:1.2.1")
+    implementation("androidx.wear.watchface:watchface-complications-data-source-ktx:1.2.1") // the watch-face slot
     testImplementation(libs.junit)
 }

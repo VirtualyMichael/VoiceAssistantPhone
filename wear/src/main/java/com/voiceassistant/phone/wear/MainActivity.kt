@@ -5,6 +5,9 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -22,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.ButtonDefaults
 import androidx.wear.compose.material.Chip
@@ -42,21 +46,46 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         phone = PhoneLink(this)
+        val startTalking = intent?.getBooleanExtra(EXTRA_TALK, false) == true // opened by the tile or the complication, which mean "ask now"
         setContent {
             val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) toggleTalking() }
-            LaunchedEffect(Unit) { phone.hello() }
+            val tryTalk = {
+                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) toggleTalking()
+                else askMic.launch(Manifest.permission.RECORD_AUDIO)
+            }
+            talkNow = tryTalk
+            LaunchedEffect(Unit) {
+                phone.hello()
+                if (startTalking && !recorder.active) tryTalk()
+            }
+            LaunchedEffect(WatchModel.recording) { // the screen stays on while the microphone is open, so a long question is not cut off by the watch sleeping
+                if (WatchModel.recording) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
             MaterialTheme {
                 Screen(
-                    onMic = {
-                        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) toggleTalking()
-                        else askMic.launch(Manifest.permission.RECORD_AUDIO)
-                    },
+                    onMic = tryTalk,
                     onYes = { phone.answer(true); WatchModel.clearAsk() },
                     onNo = { phone.answer(false); WatchModel.clearAsk() },
                     onStop = { phone.stop() },
                     onNewChat = { phone.newChat(); WatchModel.newChat() },
+                    onQuick = { text -> phone.quick(text); WatchModel.sentQuick(text); buzz(30) },
                 )
             }
+        }
+    }
+
+    private var talkNow: (() -> Unit)? = null
+
+    /** The tile or complication was tapped while the app was already open: start listening in the running screen. */
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_TALK, false) && !recorder.active) talkNow?.invoke()
+    }
+
+    /** A short buzz when the microphone opens and closes, so you can tell without looking. */
+    private fun buzz(ms: Long) {
+        runCatching {
+            getSystemService(Vibrator::class.java)?.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
         }
     }
 
@@ -64,8 +93,10 @@ class MainActivity : ComponentActivity() {
     private fun toggleTalking() {
         if (recorder.active) {
             recorder.stop() // the recording thread closes the stream; the phone is told "that was all" a moment later, once the last audio has arrived
+            buzz(30)
             return
         }
+        buzz(60)
         WatchModel.recording = true
         phone.talkStart()
         phone.openAudio { out ->
@@ -80,10 +111,18 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         recorder.stop() // never keep the microphone open once the screen is gone
     }
+
+    companion object {
+        /** Start the app already listening (the tile and the complication use this). */
+        const val EXTRA_TALK = "talk"
+    }
 }
 
+/** One-tap answers that need no microphone: the phone sends them to the assistant as typed text. */
+private val QUICK_REPLIES = listOf("Yes", "No", "Thanks", "Continue", "Say that again", "Shorter please")
+
 @Composable
-private fun Screen(onMic: () -> Unit, onYes: () -> Unit, onNo: () -> Unit, onStop: () -> Unit, onNewChat: () -> Unit) {
+private fun Screen(onMic: () -> Unit, onYes: () -> Unit, onNo: () -> Unit, onStop: () -> Unit, onNewChat: () -> Unit, onQuick: (String) -> Unit) {
     val ask = WatchModel.ask
     ScalingLazyColumn(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item { Box(Modifier.padding(top = 18.dp)) { TimeText() } }
@@ -105,6 +144,7 @@ private fun Screen(onMic: () -> Unit, onYes: () -> Unit, onNo: () -> Unit, onSto
             if (WatchModel.phase == "speaking" || WatchModel.phase == "thinking") {
                 item { Chip(onClick = onStop, label = { Text("Stop") }, colors = ChipDefaults.secondaryChipColors()) }
             }
+            items(QUICK_REPLIES) { text -> Chip(onClick = { onQuick(text) }, label = { Text(text) }, colors = ChipDefaults.secondaryChipColors()) }
             item { Chip(onClick = onNewChat, label = { Text("New chat") }, colors = ChipDefaults.secondaryChipColors()) }
         }
     }

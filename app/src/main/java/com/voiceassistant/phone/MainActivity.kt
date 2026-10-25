@@ -234,6 +234,13 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, onAttach: () 
                 OutlinedButton({ Controller.runDiagnosis(context) }, enabled = !Controller.diagnosing) { Text(if (Controller.diagnosing) "Checking…" else "Find out why") }
             }
         }
+        Controller.updateAvailable?.let { found ->
+            val context = LocalContext.current
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Version ${found.version} is available.", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                TextButton({ runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(found.url))) } }) { Text("See what's new") }
+            }
+        }
         // hands-free is switched on and set up in Settings (This phone); only a problem with it is worth showing here
         if (Controller.hfNotice.isNotBlank()) Text(Controller.hfNotice, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {

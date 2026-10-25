@@ -38,6 +38,9 @@ object WatchModel {
     fun onAsk(a: WatchProtocol.Ask) = main.post { ask = a }
     fun clearAsk() = main.post { ask = null }
     fun newChat() = main.post { heard = ""; reply = ""; ask = null }
+
+    /** A quick reply was tapped: show it as what was heard, so the screen answers straight away. */
+    fun sentQuick(text: String) = main.post { heard = text; reply = ""; phase = "thinking" }
     fun phoneMissing() = main.post { phoneFound = false }
 
     /** The phone's own label for each state, in words for a small screen. */

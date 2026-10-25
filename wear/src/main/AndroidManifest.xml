@@ -3,6 +3,7 @@
 
     <uses-feature android:name="android.hardware.type.watch" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
         android:allowBackup="false"
@@ -19,6 +20,32 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- swipe to it from the watch face and tap once to ask -->
+        <service
+            android:name=".AskTile"
+            android:exported="true"
+            android:label="Ask the assistant"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+            <meta-data android:name="androidx.wear.tiles.PREVIEW" android:resource="@android:drawable/ic_btn_speak_now" />
+        </service>
+
+        <!-- a watch-face slot that opens the app already listening -->
+        <service
+            android:name=".AskComplication"
+            android:exported="true"
+            android:icon="@android:drawable/ic_btn_speak_now"
+            android:label="Ask the assistant"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data android:name="android.support.wearable.complications.SUPPORTED_TYPES" android:value="SHORT_TEXT" />
+            <meta-data android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS" android:value="0" />
+        </service>
 
         <!-- what the phone sends: state, what it heard, the reply, questions needing yes or no -->
         <service android:name=".WatchListener" android:exported="true">

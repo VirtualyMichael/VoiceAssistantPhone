@@ -131,6 +131,7 @@ fun SettingsScreen(
                             item { Group("Most used") { essentials.forEachIndexed { i, it -> if (i > 0) HorizontalDivider(); row(it, false) } } }
                         }
                         item { Group("This phone") { phoneItems.forEachIndexed { i, it -> if (i > 0) HorizontalDivider(); row(it, false) } } }
+                        item { UpdateRow() }
                         item { QuitRow() }
                         if (snapshot != null) {
                             item {
@@ -160,6 +161,23 @@ fun SettingsScreen(
     }
     editing?.let { item ->
         EditorSheet(item, onDismiss = { editing = null }, onSave = { value -> send(item, value); editing = null })
+    }
+}
+
+/** Which version this is, a button to look for a newer one, and the link to it when there is one. */
+@Composable
+private fun UpdateRow() {
+    val context = LocalContext.current
+    val found = Controller.updateAvailable
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text("Voice Assistant ${Controller.installedVersion()}", style = MaterialTheme.typography.bodyLarge)
+            if (Controller.updateStatus.isNotBlank()) Text(Controller.updateStatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton({ Controller.checkForUpdates(manual = true) }) { Text("Check for updates") }
+                if (found != null) Button({ runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(found.url))) } }) { Text("See what's new") }
+            }
+        }
     }
 }
 
