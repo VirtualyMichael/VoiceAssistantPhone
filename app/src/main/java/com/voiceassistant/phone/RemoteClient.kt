@@ -121,8 +121,13 @@ class RemoteClient(private val target: Target, private val listener: RemoteListe
     fun setSetting(key: String, value: Any) = send(JSONObject().put("type", "set_setting").put("key", key).put("value", value))
     fun sendText(text: String) = send(JSONObject().put("type", "text").put("text", text))
     fun confirmResult(id: String, ok: Boolean) = send(JSONObject().put("type", "confirm_result").put("id", id).put("ok", ok))
-    fun shareFile(id: String, name: String, mime: String, total: Long, seq: Int, last: Boolean, dataBase64: String) = send(
-        JSONObject().put("type", "share_file").put("id", id).put("name", name).put("mime", mime).put("total", total).put("seq", seq).put("last", last).put("data_b64", dataBase64),
+    fun shareFile(id: String, name: String, mime: String, total: Long, seq: Int, last: Boolean, dataBase64: String, meta: String = "") = send(
+        JSONObject().put("type", "share_file").put("id", id).put("name", name).put("mime", mime).put("total", total).put("seq", seq).put("last", last).put("data_b64", dataBase64)
+            .apply { if (seq == 0 && meta.isNotBlank()) put("meta", meta) }, // what the phone knows about the file (date, camera, place), sent once with the first piece
     )
+    fun newChat() = send(JSONObject().put("type", "new_chat"))
+    fun listChats() = send(JSONObject().put("type", "list_chats"))
+    fun openChat(id: String) = send(JSONObject().put("type", "open_chat").put("id", id))
+    fun deleteChat(id: String) = send(JSONObject().put("type", "delete_chat").put("id", id))
     fun phoneActionResult(id: String, ok: Boolean, message: String) = send(JSONObject().put("type", "phone_action_result").put("id", id).put("ok", ok).put("message", message))
 }

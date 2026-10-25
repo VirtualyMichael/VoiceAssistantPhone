@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- tells a paired watch that this phone has the assistant (the watch app finds the phone by this name) -->
+    <string-array name="android_wear_capabilities">
+        <item>voice_assistant_phone</item>
+    </string-array>
+</resources>

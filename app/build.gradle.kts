@@ -16,12 +16,15 @@ android {
         applicationId = "com.voiceassistant.phone"
         minSdk = 26
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.15.0"
+        versionCode = 3
+        versionName = "0.15.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // the phone is 64-bit ARM; leaving the other chips out keeps the sherpa-onnx library from adding tens of MB
         ndk { abiFilters += listOf("arm64-v8a") }
+    }
+    sourceSets {
+        getByName("main").kotlin.directories.add("../watchlink/src/main/java") // the watch protocol, compiled into the watch app too
     }
     androidResources {
         noCompress += "onnx" // the models are read straight from the app package
@@ -69,6 +72,8 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.biometric:biometric:1.1.0") // the fingerprint or PIN check for safety settings
+    implementation("com.google.android.gms:play-services-wearable:19.0.0") // the link to a Wear OS watch (see docs/WATCH.md)
+    implementation("androidx.exifinterface:exifinterface:1.3.7") // when and where a picture was taken, sent along with it (Apache-2.0)
     implementation("androidx.fragment:fragment:1.8.5") // biometric brings an old one, which a release build's checks refuse (activity results)
     implementation("com.google.zxing:core:3.5.3") // reads the pairing QR code (Apache-2.0)
     implementation("androidx.camera:camera-core:1.4.2") // the in-app camera

@@ -14,9 +14,13 @@ and plays the spoken reply. Nothing leaves your own devices unless you chose a c
 - **Approvals**: confirmation questions from the assistant can be answered on the phone.
 - **Share to the assistant**: share pictures, videos, PDFs, text or links from any app ("Ask the assistant" in the share sheet), pick or type a
   question, and the file is attached on the PC for the assistant to read.
+- **Send photos, videos and files** with the + button next to the message box (or share from any app): pick them, add a question, and they appear
+  above your message in the chat, here and on the PC. With "Tell the assistant about photos and videos" on (default), when a picture or video was taken, with what
+  camera, how long it is and its size are sent too, and the GPS position only if "Include where they were taken" is on (off by default; many apps strip it).
+- **New chat** (top of the main screen) starts a fresh conversation here and on the PC; the old one stays in the PC's history.
 - **Phone actions**: the assistant can set alarms and timers, add calendar events, write texts and start calls on the phone. Each one is
   shown first and only happens if you tap Yes; events, texts and calls open in your own calendar, messaging app or dialler, where you save,
-  send or call yourself. Names ("text Mom") are looked up in the phone's contacts (asked for the first time) and never leave the phone.
+  send or call yourself. With "Send texts and place calls myself" on (Settings, This phone; off by default) the app sends the text or starts the call itself after your Yes; it asks Android for the SMS and phone permissions, and you still see who and what first. (Google Play restricts these permissions, so this is for builds installed outside the Play Store.) Names ("text Mom") are looked up in the phone's contacts (asked for the first time) and never leave the phone.
 - **Notifications**: with "Read my notifications" on (Settings, This phone) and Android's notification access given, the assistant can
   read the notifications on the phone when you ask ("what did I miss?").
 - **Offline helper** (off by default; Settings, This phone): when the PC is out of reach, typed requests are handled by a small AI model on the
@@ -24,6 +28,9 @@ and plays the spoken reply. Nothing leaves your own devices unless you chose a c
   asks first. It sets alarms and timers, starts texts and calls (each still needs your Yes), and answers simple questions in about 2 seconds.
   It cannot search the web and is clearly less accurate than the PC's model (4 of 9 everyday questions and 9 of 10 commands right in our
   tests). Everything stays on the phone. Voice input offline is not built yet.
+- **Chat history**: the History button lists the conversations saved on the PC, newest first; tap one to continue it (here and on the PC) or delete it.
+- **Watch** (first slice, not yet tried on a real watch): a Wear OS app in `wear/` talks to the assistant through this phone, never to the PC itself. Switch it on in
+  Settings, This phone, "Let my watch talk to the assistant" (off by default). See `docs/WATCH.md` in the PC repository.
 - **Settings**: every setting of the assistant that is safe to change remotely, searchable, with a "?" help line on each. Safety settings
   are locked unless the PC owner allows them on the PC, and then still ask for the phone's fingerprint or PIN.
 - **Phone-only settings**: hands-free, wake phrase and sensitivity, camera timer, vibration.

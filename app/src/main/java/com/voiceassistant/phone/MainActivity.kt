@@ -26,6 +26,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -35,6 +40,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.layout.widthIn
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,11 +67,19 @@ import com.voiceassistant.phone.ui.theme.VoiceAssistantPhoneTheme
 
 class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerprint prompt can be shown
     private var micAllowed by mutableStateOf(false)
+    private var historyOpen by mutableStateOf(false) // the saved chats from the PC
     private var settingsPage by mutableStateOf<String?>(null) // null: the main screen; "": settings home; otherwise a section id
     private val askForMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { micAllowed = it }
     private val askForNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { Controller.turnHandsFree(true) }
     private var contactsAllowed by mutableStateOf(false) // texts and calls look names up in the phone's contacts
     private val askForContacts = registerForActivityResult(ActivityResultContracts.RequestPermission()) { contactsAllowed = it }
+    private val askForDirect = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        Controller.directPermissionAsk = false
+        if (!granted.values.all { it }) Controller.directHelp = true
+    }
+    private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        IncomingShare.fromUris(uris, contentResolver)?.let { Controller.receiveShare(it) }
+    }
     private val askForMicThenHandsFree = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         micAllowed = granted
         if (granted) switchHandsFree(true)
@@ -107,8 +125,35 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
         if (!micAllowed) askForMic.launch(Manifest.permission.RECORD_AUDIO)
         setContent {
             VoiceAssistantPhoneTheme {
-                BackHandler(enabled = settingsPage != null) { settingsPage = if (settingsPage.isNullOrEmpty()) null else "" }
+                BackHandler(enabled = settingsPage != null || historyOpen) { if (historyOpen) historyOpen = false else settingsPage = if (settingsPage.isNullOrEmpty()) null else "" }
                 DiagnosisDialog()
+                if (Controller.directHelp) {
+                    val context = LocalContext.current
+                    AlertDialog(
+                        onDismissRequest = { Controller.directHelp = false },
+                        title = { Text("Texts need one more step") },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("Android blocks texting for apps installed outside the Play Store until you allow it:")
+                                Text("1. Tap “Open app info”.")
+                                Text("2. Tap the ⋮ menu (top right) and choose “Allow restricted settings”.")
+                                Text("3. Open Permissions and allow SMS and Phone.")
+                                Text("4. Come back and switch “Send texts and place calls myself” on again.")
+                                Text("Until then, texts and calls open your messaging app or dialler as before.", style = MaterialTheme.typography.bodySmall)
+                            }
+                        },
+                        confirmButton = {
+                            Button({
+                                Controller.directHelp = false
+                                context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + context.packageName)))
+                            }) { Text("Open app info") }
+                        },
+                        dismissButton = { TextButton({ Controller.directHelp = false }) { Text("Not now") } },
+                    )
+                }
+                LaunchedEffect(Controller.directPermissionAsk) {
+                    if (Controller.directPermissionAsk) askForDirect.launch(PhoneAction.DIRECT_PERMISSIONS)
+                }
                 if (Controller.offlineDownloadAsk) AlertDialog(
                     onDismissRequest = { Controller.answerOfflineDownload(false) },
                     title = { Text("Download the offline helper?") },
@@ -123,6 +168,7 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
                         val page = settingsPage
                         when {
                             Controller.pairing == null || Controller.setupActive -> SetupScreen()
+                            historyOpen -> HistoryScreen { historyOpen = false }
                             page != null -> SettingsScreen(
                                 page = page,
                                 onNavigate = { settingsPage = it },
@@ -134,7 +180,11 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
                                     }
                                 },
                             )
-                            else -> TalkScreen(micAllowed, { askForMic.launch(Manifest.permission.RECORD_AUDIO) }) { section -> settingsPage = section }
+                            else -> TalkScreen(
+                                micAllowed, { askForMic.launch(Manifest.permission.RECORD_AUDIO) },
+                                onAttach = { pickFiles.launch(arrayOf("image/*", "video/*", "application/pdf", "text/*", "application/json")) },
+                                onHistory = { historyOpen = true },
+                            ) { section -> settingsPage = section }
                         }
                     }
                 }
@@ -159,7 +209,7 @@ private fun ComponentActivity.pairFromDebugIntent(intent: android.content.Intent
 }
 
 @Composable
-private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, openSettings: (section: String) -> Unit) {
+private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, onAttach: () -> Unit, onHistory: () -> Unit, openSettings: (section: String) -> Unit) {
     val listState = rememberLazyListState()
     var typed by remember { mutableStateOf("") }
     val lines = Controller.lines
@@ -168,7 +218,9 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, openSettings:
     }
     Column(Modifier.fillMaxSize().imePadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) { // imePadding: the keyboard must not cover the message box
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(Controller.status, style = MaterialTheme.typography.titleMedium)
+            Text(Controller.status, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            TextButton(onHistory) { Text("History") }
+            TextButton({ Controller.newChat() }) { Text("New chat") }
             TextButton({ openSettings("") }) { Text("Settings") }
         }
         if (!Controller.connected) {
@@ -206,6 +258,7 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, openSettings:
             }
         }
         Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onAttach) { Text("＋", style = MaterialTheme.typography.titleLarge) } // send a photo, video or file
             OutlinedTextField(typed, { typed = it }, Modifier.weight(1f), placeholder = { Text("Or type a message") }, singleLine = true)
             Button({ Controller.sendText(typed); typed = "" }, enabled = Controller.connected || Controller.canAnswerOffline) { Text("Send") }
         }
@@ -278,9 +331,10 @@ private fun TalkButton() {
 
 @Composable
 private fun Bubble(line: Line, openSection: (String) -> Unit) {
-    if (line.text.isBlank()) return
+    if (line.text.isBlank() && line.media.isEmpty()) return
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (line.fromUser) Alignment.End else Alignment.Start) {
-        Text(
+        if (line.media.isNotEmpty()) MediaStrip(line.media)
+        if (line.text.isNotBlank()) Text(
             if (line.fromUser) AnnotatedString(line.text) else AnswerCard.linkify(line.text, MaterialTheme.colorScheme.primary),
             Modifier
                 .clip(RoundedCornerShape(16.dp))
@@ -313,4 +367,28 @@ private fun DiagnosisDialog() {
             { TextButton({ Controller.clearDiagnosis() }) { Text("Not now") } }
         } else null,
     )
+}
+
+/** What the user sent with a message: pictures and a frame of each video (with a play mark), other files as a name. */
+@Composable
+private fun MediaStrip(items: List<SharedItem>) {
+    val context = LocalContext.current
+    Column(Modifier.padding(bottom = 4.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        items.forEach { item ->
+            val thumb by produceState<android.graphics.Bitmap?>(null, item.uri) { value = withContext(Dispatchers.IO) { Thumbnails.load(context, item) } }
+            val picture = thumb
+            if (picture != null) {
+                Box(Modifier.clip(RoundedCornerShape(14.dp))) {
+                    Image(picture.asImageBitmap(), contentDescription = item.name, Modifier.widthIn(max = 240.dp).heightIn(max = 240.dp))
+                    if (item.kind == "video") Text("▶", Modifier.align(Alignment.Center).clip(CircleShape).background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f)).padding(horizontal = 14.dp, vertical = 8.dp), color = MaterialTheme.colorScheme.inverseOnSurface)
+                }
+            } else {
+                Text(
+                    (if (item.kind == "video") "🎬  " else if (item.kind == "PDF") "📄  " else "📎  ") + item.name,
+                    Modifier.clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primaryContainer).padding(horizontal = 12.dp, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer, maxLines = 1, style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+    }
 }

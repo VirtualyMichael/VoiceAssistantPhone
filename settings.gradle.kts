@@ -24,3 +24,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "VoiceAssistantPhone"
 include(":app")
+include(":wear")

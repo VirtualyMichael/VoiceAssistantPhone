@@ -113,7 +113,13 @@ private fun RecipientDialog(action: PhoneAction, askForContacts: () -> Unit, con
                         }
                     }
                 }
-                if (choice != null) Text(if (action.action == "call") "Your dialler opens; you tap call." else "Your messaging app opens; you tap send.",
+                if (choice != null) Text(
+                    when {
+                        Controller.directReady && action.action == "call" -> "The call starts from this phone as soon as you tap the button."
+                        Controller.directReady -> "The text is sent from this phone as soon as you tap the button."
+                        action.action == "call" -> "Your dialler opens; you tap call."
+                        else -> "Your messaging app opens; you tap send."
+                    },
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
@@ -121,7 +127,9 @@ private fun RecipientDialog(action: PhoneAction, askForContacts: () -> Unit, con
             when {
                 !isNumber && !contactsAllowed -> Button(askForContacts) { Text("Allow contacts") }
                 choice == null -> Button({ Controller.answerAction(context, false, reason = "no_contact") }) { Text("OK") }
-                else -> Button({ Controller.answerAction(context, true, choice.number) }) { Text(if (action.action == "call") "Open dialler" else "Open messages") }
+                else -> Button({ Controller.answerAction(context, true, choice.number) }) { Text(
+                    if (Controller.directReady) (if (action.action == "call") "Call now" else "Send text") else if (action.action == "call") "Open dialler" else "Open messages",
+                ) }
             }
         },
         dismissButton = {

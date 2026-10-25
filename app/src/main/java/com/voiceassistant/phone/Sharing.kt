@@ -60,6 +60,12 @@ data class IncomingShare(val items: List<SharedItem>, val text: String) {
             return if (items.isEmpty() && all.isBlank()) null else IncomingShare(items, all.trim())
         }
 
+        /** Files picked inside the app (the attach button). */
+        fun fromUris(uris: List<Uri>, resolver: ContentResolver): IncomingShare? {
+            val items = uris.take(MAX_ITEMS).mapNotNull { describe(it, resolver, null) }.filter { usable(it.mime) }
+            return if (items.isEmpty()) null else IncomingShare(items, "")
+        }
+
         fun usable(mime: String) = mime.startsWith("image/") || mime.startsWith("video/") || mime == "application/pdf" ||
             mime.startsWith("text/") || mime == "application/json"
 

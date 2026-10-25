@@ -20,8 +20,11 @@ import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import kotlin.math.sqrt
 
-data class Line(val fromUser: Boolean, val text: String, val card: AnswerCard? = null)
+/** [media] are the pictures, videos and files sent with a message from the user; they show above its text. */
+data class Line(val fromUser: Boolean, val text: String, val card: AnswerCard? = null, val media: List<SharedItem> = emptyList())
 data class Approval(val id: String, val prompt: String)
+/** One saved chat on the PC, for the history screen. [updated] is seconds since 1970. */
+data class ChatSummary(val id: String, val title: String, val updated: Long, val count: Int)
 /** The assistant's request for the camera. mode is "photo", or "video" with the limits below (the PC's quality level: normal, mid or high). */
 data class CameraRequest(
     val id: String, val prompt: String, val auto: Boolean,
@@ -119,6 +122,21 @@ object Controller : RemoteListener {
         private set
     var cameraTimerDefault by mutableStateOf(false)
         private set
+    /** Send the PC what the phone knows about a picture or video (when it was taken, with what, how long), and optionally where. */
+    var shareDetails by mutableStateOf(true)
+        private set
+    var sharePlaces by mutableStateOf(false)
+        private set
+    /** Texts and calls are sent from this phone itself after the user's Yes, instead of opening the messaging app or dialler. */
+    var directSend by mutableStateOf(false)
+        private set
+    /** True while Android's permission question for [directSend] should be on screen (the activity asks it). */
+    var directPermissionAsk by mutableStateOf(false)
+    /** Android refused the SMS or phone permission (apps installed outside the Play Store need "Allow restricted settings" first): show the steps. */
+    var directHelp by mutableStateOf(false)
+    val directReady: Boolean get() = directSend && PhoneAction.DIRECT_PERMISSIONS.all { appContext.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+    /** What the next message from the user shows above its text: the question as typed, with the things sent along with it. */
+    private var shareBubble: Pair<String, List<SharedItem>>? = null
     private val previousValues = mutableMapOf<String, Any?>()
 
     /** The PC's settings are requested again whenever the screen opens or the link comes back. */
@@ -168,6 +186,19 @@ object Controller : RemoteListener {
                 "Lets the assistant read the notifications on this phone when you ask, for example “what did I miss?”. They go to your PC only, and only when you ask. " +
                     "Android also needs notification access for this app; turning this on opens that page.",
                 "toggle", value = readNotifications && NotificationReader.accessGranted(appContext), default = false, sectionTitle = where),
+            SettingItem("phone.share_details", "Tell the assistant about photos and videos",
+                "When you send a picture or video, also send when it was taken, with what camera and how long it is, so you can ask things like “when was this taken?”. It goes to your PC only.",
+                "toggle", value = shareDetails, default = true, sectionTitle = where),
+            SettingItem("phone.share_places", "Include where they were taken",
+                "Adds the GPS position stored in a picture or video, when it has one, so you can ask “where was this?”. Many apps remove it before sharing. Off by default.",
+                "toggle", value = sharePlaces, default = false, sectionTitle = where),
+            SettingItem("phone.direct_send", "Send texts and place calls myself",
+                "When you say Yes to a text or call, this app sends the text or starts the call itself instead of opening the messaging app or dialler. You still see who and what first and must tap Yes. " +
+                    "Android asks for permission to send texts and make calls.",
+                "toggle", value = directSend, default = false, sectionTitle = where),
+            SettingItem("phone.watch", "Let my watch talk to the assistant",
+                "Lets the Voice Assistant app on your Wear OS watch ask questions through this phone and show the answers. The watch never reaches your PC itself. Off by default.",
+                "toggle", value = watchEnabled, default = false, sectionTitle = where),
             SettingItem("phone.offline", if (offlineProgress >= 0) "Offline helper (downloading: $offlineProgress%)" else "Offline helper",
                 "When your PC is out of reach, typed requests like alarms, timers, texts, calls and simple questions are handled by a small AI model on this phone. " +
                     "It is much less capable than the one on your PC and cannot search the web. Needs a one-time ${OnDeviceModel.DOWNLOAD_TEXT} download; everything stays on this phone.",
@@ -186,6 +217,14 @@ object Controller : RemoteListener {
             "phone.sensitivity" -> changeSensitivity(value.toString().toIntOrNull() ?: 1)
             "phone.camera_timer" -> { cameraTimerDefault = value == true; prefs.edit().putBoolean("camera_timer", cameraTimerDefault).apply() }
             "phone.haptics" -> { hapticsOn = value == true; prefs.edit().putBoolean("haptics", hapticsOn).apply() }
+            "phone.share_details" -> { shareDetails = value == true; prefs.edit().putBoolean("share_details", shareDetails).apply() }
+            "phone.share_places" -> { sharePlaces = value == true; prefs.edit().putBoolean("share_places", sharePlaces).apply() }
+            "phone.direct_send" -> {
+                directSend = value == true
+                prefs.edit().putBoolean("direct_send", directSend).apply()
+                if (directSend && !directReady) directPermissionAsk = true
+            }
+            "phone.watch" -> changeWatch(value == true)
             "phone.offline" -> if (offlineProgress < 0) changeOfflineHelper(value == true)
             "phone.notifications" -> {
                 readNotifications = value == true
@@ -267,6 +306,12 @@ object Controller : RemoteListener {
         sensitivity = prefs.getInt("sensitivity", 1).coerceIn(0, 2)
         if (prefs.getString("kw_key", "") == keywordKey()) keywordLines = prefs.getString("kw_lines", "") ?: ""
         hapticsOn = prefs.getBoolean("haptics", true)
+        shareDetails = prefs.getBoolean("share_details", true)
+        sharePlaces = prefs.getBoolean("share_places", false)
+        directSend = prefs.getBoolean("direct_send", false)
+        watchEnabled = prefs.getBoolean("watch", false)
+        WatchLink.init(appContext)
+        WatchLink.enabled = watchEnabled
         cameraTimerDefault = prefs.getBoolean("camera_timer", false)
         readNotifications = prefs.getBoolean("read_notifications", false)
         offlineHelperOn = prefs.getBoolean("offline_helper", false) && OnDeviceModel.available(appContext)
@@ -439,6 +484,7 @@ object Controller : RemoteListener {
         client?.close(); client = null
         main.removeCallbacks(noWordsCheck)
         connected = false
+        pushWatchState()
         talking = false
         micOpen = false
         sent = false
@@ -522,6 +568,113 @@ object Controller : RemoteListener {
         sent = false
         partial = ""
         notice = ""
+    }
+
+    // ---- the PC's saved chats ------------------------------------------------------------------
+    var chats by mutableStateOf<List<ChatSummary>>(emptyList())
+        private set
+    var currentChatId by mutableStateOf("")
+        private set
+    var chatsLoading by mutableStateOf(false)
+        private set
+
+    fun loadChats() {
+        if (!connected) return
+        chatsLoading = true
+        client?.listChats()
+    }
+
+    /** Open a saved chat: the PC continues from it, and its messages replace what is shown here. */
+    fun openChat(id: String) {
+        if (connected) client?.openChat(id) else notice = "Connect to your PC to open an old chat."
+    }
+
+    fun deleteChat(id: String) {
+        if (connected) client?.deleteChat(id)
+    }
+
+    // ---- the watch ----------------------------------------------------------------------------
+    /** The user allowed their watch to talk to the assistant through this phone (Settings, This phone). Off by default. */
+    var watchEnabled by mutableStateOf(false)
+        private set
+    private var watchTalking = false
+    private val watchAudioWaiting = ArrayDeque<ByteArray>()
+
+    private fun changeWatch(on: Boolean) {
+        watchEnabled = on
+        WatchLink.enabled = on
+        prefs.edit().putBoolean("watch", on).apply()
+        if (on) pushWatchState()
+    }
+
+    private fun pushWatchState() {
+        WatchLink.state(if (connected) assistantState else "offline", connected, offlineHelperOn)
+    }
+
+    /** The watch app opened: tell it where things stand. */
+    fun watchHello() = WatchLink.hello(if (connected) assistantState else "offline", connected, offlineHelperOn)
+
+    /** The watch's button went down: the assistant starts listening, and the watch streams the audio (see [watchAudio]). */
+    fun watchTalkStart() {
+        val c = client
+        if (c == null || !connected) {
+            WatchLink.reply("I can't reach your PC.")
+            return
+        }
+        if (assistantState == "speaking" || assistantState == "thinking") {
+            player.flush()
+            c.interrupt()
+        }
+        watchAudioWaiting.clear()
+        watchTalking = true
+        sent = false
+        gotWords = false
+        partial = ""
+        c.wake()
+    }
+
+    /** One frame of the watch's microphone. The PC takes audio only once it says it is listening, so early frames wait (a second at most). */
+    fun watchAudio(frame: ByteArray) {
+        main.post {
+            if (!watchTalking) return@post
+            if (assistantState == "listening") {
+                flushWatchAudio()
+                client?.sendAudio(frame)
+            } else if (watchAudioWaiting.size < 34) {
+                watchAudioWaiting.addLast(frame)
+            }
+        }
+    }
+
+    private fun flushWatchAudio() {
+        while (watchAudioWaiting.isNotEmpty()) client?.sendAudio(watchAudioWaiting.removeFirst())
+    }
+
+    fun watchTalkEnd() {
+        if (!watchTalking) return
+        watchTalking = false
+        if (assistantState == "listening") flushWatchAudio()
+        watchAudioWaiting.clear()
+        client?.endOfSpeech()
+        talkEndedAt = SystemClock.elapsedRealtime()
+        sent = true
+    }
+
+    /** Yes or no from the watch. Texts and calls need the phone (who exactly), so only questions that need no choice are answered here. */
+    fun watchAnswer(ok: Boolean) {
+        val action = pendingAction
+        when {
+            approval != null -> answer(ok)
+            action != null && !action.needsRecipient -> answerAction(appContext, ok)
+        }
+    }
+
+    /** The New chat button: forget this conversation here and on the PC (the old one stays in the PC's history). */
+    fun newChat() {
+        lines.clear()
+        shareBubble = null
+        clearSettingsQuestion()
+        if (connected) client?.newChat()
     }
 
     fun sendText(text: String) {
@@ -625,6 +778,7 @@ object Controller : RemoteListener {
             for ((n, item) in share.items.withIndex()) {
                 val id = java.util.UUID.randomUUID().toString().replace("-", "")
                 try {
+                    val meta = if (shareDetails) MediaMeta.describe(context, item, sharePlaces) else ""
                     val prepared = SharePrep.open(context, item)
                     prepared.stream.use { input ->
                         val buffer = ByteArray(PIECE_BYTES)
@@ -637,7 +791,7 @@ object Controller : RemoteListener {
                             while (link.queuedBytes() > 3_000_000 && waited < 600 && client === link) { Thread.sleep(50); waited++ }
                             if (client !== link || waited >= 600) throw IllegalStateException("The link to your PC was lost.")
                             link.shareFile(id, prepared.name, prepared.mime, prepared.size, seq++, last,
-                                android.util.Base64.encodeToString(buffer, 0, read, android.util.Base64.NO_WRAP))
+                                android.util.Base64.encodeToString(buffer, 0, read, android.util.Base64.NO_WRAP), meta)
                             sent += read
                             val pct = if (prepared.size > 0) (sent * 100 / prepared.size).toInt() else 100
                             main.post { shareStatus = "Sending ${item.kind} ${n + 1} of ${share.items.size}… $pct%" }
@@ -662,7 +816,9 @@ object Controller : RemoteListener {
                     shareStatus = problems.joinToString(" ")
                     return@post
                 }
-                sendText(share.describe(saved) + question.trim().ifBlank { "What can you tell me about this?" })
+                val asked = question.trim().ifBlank { "What can you tell me about this?" }
+                shareBubble = (if (share.text.isBlank()) asked else share.text.take(300) + "\n" + asked) to share.items
+                sendText(share.describe(saved) + asked)
                 incomingShare = null
                 shareStatus = if (problems.isEmpty()) "" else problems.joinToString(" ")
             }
@@ -695,6 +851,7 @@ object Controller : RemoteListener {
             return
         }
         pendingAction = action
+        if (!action.needsRecipient) WatchLink.ask(action.id, action.describe(), "action")
         if (visibleActivities == 0) { // the screen is off or another app is in front: a notification brings the question up
             val manager = appContext.getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(NotificationChannel("actions", "Requests from your assistant", NotificationManager.IMPORTANCE_HIGH))
@@ -715,11 +872,11 @@ object Controller : RemoteListener {
         pendingAction = null
         appContext.getSystemService(NotificationManager::class.java).cancel(ACTION_NOTIFICATION_ID)
         if (action.id == "offline") { // from the offline helper: nobody on the PC is waiting, so the answer goes in the chat
-            lines.add(Line(false, if (!ok) "Okay, cancelled." else PhoneAction.perform(context, action, number).second))
+            lines.add(Line(false, if (!ok) "Okay, cancelled." else PhoneAction.perform(context, action, number, direct = directReady).second))
             return
         }
         if (!ok) { client?.phoneActionResult(action.id, false, reason); return }
-        val (done, message) = PhoneAction.perform(context, action, number)
+        val (done, message) = PhoneAction.perform(context, action, number, direct = directReady)
         client?.phoneActionResult(action.id, done, message)
     }
 
@@ -765,6 +922,7 @@ object Controller : RemoteListener {
             pcKnowsPhone = true
             connected = true
             status = "Connected to ${message.optString("name", pairing?.name ?: "your PC")}"
+            pushWatchState()
             assistantState = message.optString("state", "idle")
             if (settings != null) client?.getSettings() // the screen was open before the link dropped
             if (handsFree && keywordLines.isBlank()) client?.getKeywords(wakePhrase, thresholds[sensitivity])
@@ -778,6 +936,8 @@ object Controller : RemoteListener {
                 "state" -> {
                     assistantState = message.optString("state")
                     engine?.onPcState(assistantState)
+                    pushWatchState()
+                    if (watchTalking && assistantState == "listening") flushWatchAudio()
                     if (assistantState == "idle" || assistantState == "speaking") sent = false
                     if (assistantState == "listening" && talking && waitingForListening) main.postDelayed({ if (talking) startMic() }, 100)
                 }
@@ -790,7 +950,10 @@ object Controller : RemoteListener {
                     gotWords = true
                     sent = false
                     main.removeCallbacks(noWordsCheck)
-                    lines.add(Line(true, message.optString("text")))
+                    val shown = shareBubble
+                    shareBubble = null
+                    lines.add(if (shown != null) Line(true, shown.first, media = shown.second) else Line(true, message.optString("text")))
+                    WatchLink.heard(message.optString("text"))
                     lines.add(Line(false, ""))
                 }
                 "keywords" -> {
@@ -850,10 +1013,35 @@ object Controller : RemoteListener {
                 )
                 "camera_close" -> if (camera?.id == message.optString("id")) closeCamera()
                 "share_saved" -> shareReplies[message.optString("id")] = message
+                "chats" -> {
+                    val items = message.optJSONArray("items")
+                    chats = (0 until (items?.length() ?: 0)).mapNotNull { i ->
+                        items?.optJSONObject(i)?.let { ChatSummary(it.optString("id"), it.optString("title"), it.optLong("updated"), it.optInt("count")) }
+                    }
+                    currentChatId = message.optString("current")
+                    chatsLoading = false
+                }
+                "chat_opened" -> if (message.optBoolean("ok")) {
+                    lines.clear()
+                    shareBubble = null
+                    val messages = message.optJSONArray("messages")
+                    for (i in 0 until (messages?.length() ?: 0)) {
+                        val m = messages?.optJSONObject(i) ?: continue
+                        lines.add(Line(m.optString("role") == "user", m.optString("text")))
+                    }
+                    currentChatId = message.optString("id")
+                    notice = ""
+                } else notice = "That chat could not be opened."
                 "card" -> attachCard(AnswerCard.parse(message))
                 "phone_action" -> receiveAction(PhoneAction(message.optString("id"), message.optString("action"), message.optJSONObject("args") ?: JSONObject()))
-                "assistant_delta" -> appendAssistant(message.optString("text"))
-                "confirm" -> approval = Approval(message.optString("id"), message.optString("prompt"))
+                "assistant_delta" -> {
+                    appendAssistant(message.optString("text"))
+                    WatchLink.reply(lines.lastOrNull { !it.fromUser }?.text.orEmpty())
+                }
+                "confirm" -> {
+                    approval = Approval(message.optString("id"), message.optString("prompt"))
+                    WatchLink.ask(message.optString("id"), message.optString("prompt"), "approval")
+                }
                 "audio_start" -> {
                     if (talkEndedAt != 0L) {
                         latency = "Reply started ${"%.1f".format((SystemClock.elapsedRealtime() - talkEndedAt) / 1000.0)} s after you let go"

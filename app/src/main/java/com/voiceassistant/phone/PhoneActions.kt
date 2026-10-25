@@ -57,16 +57,26 @@ data class PhoneAction(val id: String, val action: String, val args: JSONObject)
         )
 
         /** Carry out an action the user agreed to; [number] is who they picked for a text or call. Returns (done, what to tell the assistant). */
-        fun perform(context: Context, a: PhoneAction, number: String? = null): Pair<Boolean, String> = runCatching {
+        fun perform(context: Context, a: PhoneAction, number: String? = null, direct: Boolean = false): Pair<Boolean, String> = runCatching {
             val args = a.args
             when (a.action) {
                 "send_text" -> {
                     val to = number ?: return@runCatching false to "no_contact"
+                    if (direct && directAllowed(context, "send_text")) {
+                        val sms = context.getSystemService(android.telephony.SmsManager::class.java)
+                        val parts = sms.divideMessage(args.optString("message"))
+                        sms.sendMultipartTextMessage(to, null, parts, null, null)
+                        return@runCatching true to "The text to ${args.optString("to")} was sent from the phone."
+                    }
                     start(context, Intent(Intent.ACTION_SENDTO, android.net.Uri.parse("smsto:" + android.net.Uri.encode(to))).putExtra("sms_body", args.optString("message")))
                     true to "The messaging app opened with the text to ${args.optString("to")} filled in; the user taps send there."
                 }
                 "call" -> {
                     val to = number ?: return@runCatching false to "no_contact"
+                    if (direct && directAllowed(context, "call")) {
+                        start(context, Intent(Intent.ACTION_CALL, android.net.Uri.parse("tel:" + android.net.Uri.encode(to))))
+                        return@runCatching true to "The call to ${args.optString("to")} was started from the phone."
+                    }
                     start(context, Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:" + android.net.Uri.encode(to))))
                     true to "The phone's dialler opened with ${args.optString("to")}'s number; the user taps call there."
                 }
@@ -102,6 +112,13 @@ data class PhoneAction(val id: String, val action: String, val args: JSONObject)
                 else -> false to "the phone app does not support '${a.action}' yet"
             }
         }.getOrElse { e -> false to (if (e is android.content.ActivityNotFoundException) "there is no app on the phone that can do that" else "it failed on the phone (${e.message})") }
+
+        /** The permission Android needs to send a text or place a call without another app (asked for when the user turns the setting on). */
+        fun directAllowed(context: Context, action: String): Boolean = context.checkSelfPermission(
+            if (action == "call") android.Manifest.permission.CALL_PHONE else android.Manifest.permission.SEND_SMS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        val DIRECT_PERMISSIONS = arrayOf(android.Manifest.permission.SEND_SMS, android.Manifest.permission.CALL_PHONE)
 
         private fun start(context: Context, intent: Intent) {
             context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
