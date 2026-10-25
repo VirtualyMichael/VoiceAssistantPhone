@@ -101,6 +101,16 @@ class HandsFreeEngine(
         }
     }
 
+    /** The wake phrase went off by mistake (or the user changed their mind): drop what was captured, tell the PC to forget it, and go back to waiting. */
+    fun cancel() {
+        if (state != HfState.Capturing) return
+        sink.interrupt()
+        sink.flushPlayback()
+        detectors.resetWake()
+        preRoll.clear()
+        set(HfState.Armed)
+    }
+
     /** The Talk button was pressed while hands-free is on: start a turn without the wake phrase. */
     fun manualPress() {
         if (state == HfState.Off || state == HfState.Capturing) return

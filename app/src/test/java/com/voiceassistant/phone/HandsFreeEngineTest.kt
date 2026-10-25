@@ -60,6 +60,21 @@ class HandsFreeEngineTest {
     }
 
     @Test
+    fun cancellingAFalseWakeSendsNothingMoreAndGoesBackToWaiting() {
+        hearWakePhrase()
+        assertEquals(HfState.Capturing, engine.state)
+        feed(300, speech = true)
+        val sentSoFar = sink.audioFrames
+        engine.cancel()
+        assertEquals(HfState.Armed, engine.state)
+        assertTrue("interrupt" in sink.events && "end" !in sink.events)
+        feed(2_000, speech = true)
+        assertEquals(sentSoFar, sink.audioFrames)
+        engine.cancel() // nothing to cancel: harmless
+        assertEquals(HfState.Armed, engine.state)
+    }
+
+    @Test
     fun nothingLeavesThePhoneUntilTheWakePhraseIsHeard() {
         feed(5_000, speech = true)
         assertEquals(HfState.Armed, engine.state)

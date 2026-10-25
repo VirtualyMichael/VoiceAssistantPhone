@@ -184,6 +184,7 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
                                 micAllowed, { askForMic.launch(Manifest.permission.RECORD_AUDIO) },
                                 onAttach = { pickFiles.launch(arrayOf("image/*", "video/*", "application/pdf", "text/*", "application/json")) },
                                 onHistory = { historyOpen = true },
+                                onHandsFree = ::switchHandsFree,
                             ) { section -> settingsPage = section }
                         }
                     }
@@ -209,7 +210,7 @@ private fun ComponentActivity.pairFromDebugIntent(intent: android.content.Intent
 }
 
 @Composable
-private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, onAttach: () -> Unit, onHistory: () -> Unit, openSettings: (section: String) -> Unit) {
+private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, onAttach: () -> Unit, onHistory: () -> Unit, onHandsFree: (Boolean) -> Unit, openSettings: (section: String) -> Unit) {
     val listState = rememberLazyListState()
     var typed by remember { mutableStateOf("") }
     val lines = Controller.lines
@@ -255,6 +256,15 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, onAttach: () 
             }
             if (Controller.phase == Phase.Speaking || Controller.phase == Phase.Thinking) {
                 OutlinedButton({ Controller.stopSpeaking() }) { Text("Stop") }
+            }
+            // it went off by mistake: drop what it heard, send nothing more
+            if (Controller.phase == Phase.Listening || Controller.phase == Phase.Starting || Controller.phase == Phase.Sending) {
+                OutlinedButton({ Controller.cancelListening() }) { Text("Cancel, that was a mistake") }
+            }
+            if (micAllowed && Controller.handsFree) {
+                TextButton({ Controller.pauseListening() }) { Text("Mic off: stop listening for “${Controller.wakePhrase}”") }
+            } else if (Controller.hfPaused) {
+                Button({ onHandsFree(true) }) { Text("Mic is off. Turn listening back on") }
             }
         }
         Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {

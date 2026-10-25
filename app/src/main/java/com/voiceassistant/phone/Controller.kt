@@ -349,6 +349,7 @@ object Controller : RemoteListener {
         cameraTimerDefault = prefs.getBoolean("camera_timer", false)
         readNotifications = prefs.getBoolean("read_notifications", false)
         mediaControl = prefs.getBoolean("media_control", false)
+        hfPaused = prefs.getBoolean("hf_paused", false)
         offlineHelperOn = prefs.getBoolean("offline_helper", false) && OnDeviceModel.available(appContext)
         handsFree = prefs.getBoolean("handsfree", false) &&
             appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -374,6 +375,8 @@ object Controller : RemoteListener {
         handsFree = on
         prefs.edit().putBoolean("handsfree", on).apply()
         hfNotice = ""
+        hfPaused = false
+        prefs.edit().putBoolean("hf_paused", false).apply()
         if (on) {
             startHandsFreeWhenReady()
         } else {
@@ -593,6 +596,36 @@ object Controller : RemoteListener {
             i += 2
         }
         return (sqrt(sum / (frame.size / 2)) * 6).toFloat() // speech sits low in the range, so scale it up for the ring
+    }
+
+    /** Hands-free was switched off with the Mic off button (not in Settings): the main screen offers to turn it back on. */
+    var hfPaused by mutableStateOf(false)
+        private set
+
+    /** "Mic off": stop listening completely (the microphone service ends and the notification goes) until the user turns it back on. */
+    fun pauseListening() {
+        cancelListening()
+        turnHandsFree(false)
+        hfPaused = true
+        prefs.edit().putBoolean("hf_paused", true).apply()
+    }
+
+    /** Cancel a turn that started by mistake (the wake phrase went off, or Talk was pressed), without waiting for an answer. */
+    fun cancelListening() {
+        engine?.cancel()
+        if (talking || mic != null) {
+            talking = false
+            waitingForListening = false
+            mic?.stop(); mic = null
+            micOpen = false
+        }
+        player.flush()
+        client?.interrupt()
+        main.removeCallbacks(noWordsCheck)
+        sent = false
+        level = 0f
+        partial = ""
+        notice = ""
     }
 
     fun stopSpeaking() {
