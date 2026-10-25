@@ -131,6 +131,7 @@ fun SettingsScreen(
                             item { Group("Most used") { essentials.forEachIndexed { i, it -> if (i > 0) HorizontalDivider(); row(it, false) } } }
                         }
                         item { Group("This phone") { phoneItems.forEachIndexed { i, it -> if (i > 0) HorizontalDivider(); row(it, false) } } }
+                        item { QuitRow() }
                         if (snapshot != null) {
                             item {
                                 Group("Everything on the PC") {
@@ -159,6 +160,21 @@ fun SettingsScreen(
     }
     editing?.let { item ->
         EditorSheet(item, onDismiss = { editing = null }, onSave = { value -> send(item, value); editing = null })
+    }
+}
+
+/** Ends the app completely (the link, the microphone service, the notifications), without a trip to Android's Force stop. */
+@Composable
+private fun QuitRow() {
+    val activity = LocalContext.current as? android.app.Activity
+    Surface(Modifier.fillMaxWidth().clickable { Controller.quitCompletely(activity) }, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.errorContainer) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text("Quit the assistant completely", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onErrorContainer)
+            Text(
+                "Closes the link to your PC and stops listening, then ends the app. Open it again any time. You can also long-press the app icon and choose Quit.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
+            )
+        }
     }
 }
 

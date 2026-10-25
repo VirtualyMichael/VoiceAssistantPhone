@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Voice Assistant</string>
+    <string name="quit_short">Quit</string>
+    <string name="quit_long">Quit completely</string>
 </resources>

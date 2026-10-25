@@ -21,7 +21,7 @@ import org.json.JSONObject
 import kotlin.math.sqrt
 
 /** [media] are the pictures, videos and files sent with a message from the user; they show above its text. */
-data class Line(val fromUser: Boolean, val text: String, val card: AnswerCard? = null, val media: List<SharedItem> = emptyList())
+data class Line(val fromUser: Boolean, val text: String, val card: AnswerCard? = null, val media: List<SharedItem> = emptyList(), val thinking: String = "")
 data class Approval(val id: String, val prompt: String)
 /** One saved chat on the PC, for the history screen. [updated] is seconds since 1970. */
 data class ChatSummary(val id: String, val title: String, val updated: Long, val count: Int)
@@ -186,6 +186,11 @@ object Controller : RemoteListener {
                 "Lets the assistant read the notifications on this phone when you ask, for example “what did I miss?”. They go to your PC only, and only when you ask. " +
                     "Android also needs notification access for this app; turning this on opens that page.",
                 "toggle", value = readNotifications && NotificationReader.accessGranted(appContext), default = false, sectionTitle = where),
+            SettingItem("phone.media",
+                if (mediaControl && !NotificationReader.accessGranted(appContext)) "Control music and video (needs access: tap to allow)" else "Control music and video",
+                "Lets the assistant play, pause, skip and set the volume of whatever is playing on this phone, such as YouTube Music, and start a song you ask for. " +
+                    "Android calls this notification access, and turning this on opens that page.",
+                "toggle", value = mediaControl && NotificationReader.accessGranted(appContext), default = false, sectionTitle = where),
             SettingItem("phone.share_details", "Tell the assistant about photos and videos",
                 "When you send a picture or video, also send when it was taken, with what camera and how long it is, so you can ask things like “when was this taken?”. It goes to your PC only.",
                 "toggle", value = shareDetails, default = true, sectionTitle = where),
@@ -223,6 +228,16 @@ object Controller : RemoteListener {
                 directSend = value == true
                 prefs.edit().putBoolean("direct_send", directSend).apply()
                 if (directSend && !directReady) directPermissionAsk = true
+            }
+            "phone.media" -> {
+                mediaControl = value == true
+                prefs.edit().putBoolean("media_control", mediaControl).apply()
+                if (mediaControl && !NotificationReader.accessGranted(appContext)) {
+                    showSettingsNote("Turn on notification access for Voice Assistant, then come back.")
+                    runCatching {
+                        appContext.startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                }
             }
             "phone.watch" -> changeWatch(value == true)
             "phone.offline" -> if (offlineProgress < 0) changeOfflineHelper(value == true)
@@ -297,6 +312,25 @@ object Controller : RemoteListener {
             else -> Phase.Idle
         }
 
+    /**
+     * Stop everything and end the app's process: the link to the PC, the microphone and wake-phrase service, the notifications, the watch link.
+     * Android keeps a closed app's process around; this is the in-app equivalent of Force stop. Settings (including hands-free) are kept, so the
+     * next time the app is opened it comes back as it was. [activity] is closed first so Android does not reopen it when the process ends.
+     */
+    fun quitCompletely(activity: android.app.Activity? = null) {
+        if (started) {
+            wantConnected = false
+            runCatching { client?.close() }
+            runCatching { disconnect() }
+            runCatching { appContext.stopService(Intent(appContext, ListenService::class.java)) }
+            runCatching { detachHandsFree() }
+            runCatching { player.release() }
+            runCatching { appContext.getSystemService(NotificationManager::class.java).cancelAll() }
+        }
+        activity?.finishAndRemoveTask()
+        Handler(Looper.getMainLooper()).postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 300)
+    }
+
     fun init(context: Context) {
         if (started) return
         started = true
@@ -314,6 +348,7 @@ object Controller : RemoteListener {
         WatchLink.enabled = watchEnabled
         cameraTimerDefault = prefs.getBoolean("camera_timer", false)
         readNotifications = prefs.getBoolean("read_notifications", false)
+        mediaControl = prefs.getBoolean("media_control", false)
         offlineHelperOn = prefs.getBoolean("offline_helper", false) && OnDeviceModel.available(appContext)
         handsFree = prefs.getBoolean("handsfree", false) &&
             appContext.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -850,6 +885,13 @@ object Controller : RemoteListener {
             client?.phoneActionResult(action.id, text != null, text ?: "notifications_off")
             return
         }
+        if (action.action == "media") { // switched on once in Settings; play, pause and skip need no question each time
+            val (ok, text) = if (!mediaControl) false to "media_off" else MediaControl.perform(
+                appContext, action.args.optString("command"), action.args.optString("app"), action.args.optString("query"), visibleActivities > 0,
+            )
+            client?.phoneActionResult(action.id, ok, text)
+            return
+        }
         pendingAction = action
         if (!action.needsRecipient) WatchLink.ask(action.id, action.describe(), "action")
         if (visibleActivities == 0) { // the screen is off or another app is in front: a notification brings the question up
@@ -881,6 +923,23 @@ object Controller : RemoteListener {
     }
 
     private const val ACTION_NOTIFICATION_ID = 3
+
+    /** The user allowed the assistant to play, pause and skip music and video on this phone (Settings, This phone). Needs notification access too. */
+    var mediaControl by mutableStateOf(false)
+        private set
+
+    /** Android will not open another app from the background, so "play X" waits behind a notification the user taps. */
+    fun offerMediaIntent(intent: Intent, query: String) {
+        val manager = appContext.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(NotificationChannel("actions", "Requests from your assistant", NotificationManager.IMPORTANCE_HIGH))
+        val tap = PendingIntent.getActivity(appContext, 4, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val note = android.app.Notification.Builder(appContext, "actions")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle("Tap to play")
+            .setContentText(query)
+            .setContentIntent(tap).setAutoCancel(true).build()
+        runCatching { manager.notify(ACTION_NOTIFICATION_ID + 100, note) }
+    }
 
     /** The assistant's reply to [settingsQuestion] so far ("" until it starts answering). */
     val settingsAnswer: String
@@ -1034,6 +1093,7 @@ object Controller : RemoteListener {
                 } else notice = "That chat could not be opened."
                 "card" -> attachCard(AnswerCard.parse(message))
                 "phone_action" -> receiveAction(PhoneAction(message.optString("id"), message.optString("action"), message.optJSONObject("args") ?: JSONObject()))
+                "assistant_thinking" -> appendThinking(message.optString("text"))
                 "assistant_delta" -> {
                     appendAssistant(message.optString("text"))
                     WatchLink.reply(lines.lastOrNull { !it.fromUser }?.text.orEmpty())
@@ -1140,6 +1200,13 @@ object Controller : RemoteListener {
         if (card.isEmpty) return
         val i = lines.indexOfLast { it.card?.id == card.id }.takeIf { it >= 0 } ?: lines.indexOfLast { !it.fromUser && it.text.isNotBlank() }
         if (i >= 0) lines[i] = lines[i].copy(card = card)
+    }
+
+    /** The model's reasoning goes into the reply it belongs to (shown folded above the answer), never into the spoken or saved text. */
+    private fun appendThinking(text: String) {
+        val last = lines.lastIndex
+        if (last >= 0 && !lines[last].fromUser && lines[last].card == null) lines[last] = lines[last].copy(thinking = lines[last].thinking + text)
+        else lines.add(Line(false, "", thinking = text))
     }
 
     private fun appendAssistant(text: String) {

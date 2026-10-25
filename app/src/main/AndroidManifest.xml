@@ -51,6 +51,8 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- long-press the app icon: "Quit completely" -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
             <!-- "Share" from any app: pictures, videos, PDFs, text and links go to the assistant with a question -->
             <intent-filter android:label="Ask the assistant">
                 <action android:name="android.intent.action.SEND" />
@@ -68,6 +70,14 @@
                 <data android:mimeType="application/pdf" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".QuitActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
 
         <activity
             android:name=".CameraActivity"

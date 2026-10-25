@@ -27,6 +27,11 @@ class ListenService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_QUIT) {
+            Controller.quitCompletely()
+            stopSelf()
+            return START_NOT_STICKY
+        }
         createChannel()
         startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
         if (!Controller.attachHandsFree(applicationContext)) {
@@ -65,6 +70,9 @@ class ListenService : Service() {
         val stop = PendingIntent.getService(
             this, 1, Intent(this, ListenService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
         )
+        val quit = PendingIntent.getService(
+            this, 2, Intent(this, ListenService::class.java).setAction(ACTION_QUIT), PendingIntent.FLAG_IMMUTABLE,
+        )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("Listening for “${Controller.wakePhrase}”")
@@ -72,11 +80,13 @@ class ListenService : Service() {
             .setContentIntent(open)
             .setOngoing(true)
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())
+            .addAction(Notification.Action.Builder(null, "Quit app", quit).build())
             .build()
     }
 
     companion object {
         const val ACTION_STOP = "com.voiceassistant.phone.STOP"
+        const val ACTION_QUIT = "com.voiceassistant.phone.QUIT"
         private const val CHANNEL_ID = "listening"
         private const val NOTIFICATION_ID = 1
     }

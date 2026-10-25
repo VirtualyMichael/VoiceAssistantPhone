@@ -28,7 +28,7 @@ data class PhoneAction(val id: String, val action: String, val args: JSONObject)
         else -> "The assistant asked for something this app does not know how to do yet."
     }
 
-    val known: Boolean get() = action in setOf("set_alarm", "set_timer", "add_event", "send_text", "call", "read_notifications")
+    val known: Boolean get() = action in setOf("set_alarm", "set_timer", "add_event", "send_text", "call", "read_notifications", "media")
 
     /** Texts and calls go to someone: the user picks the number before agreeing. */
     val needsRecipient: Boolean get() = action == "send_text" || action == "call"

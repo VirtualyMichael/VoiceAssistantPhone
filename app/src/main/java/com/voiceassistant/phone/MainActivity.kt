@@ -331,9 +331,10 @@ private fun TalkButton() {
 
 @Composable
 private fun Bubble(line: Line, openSection: (String) -> Unit) {
-    if (line.text.isBlank() && line.media.isEmpty()) return
+    if (line.text.isBlank() && line.media.isEmpty() && line.thinking.isBlank()) return
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (line.fromUser) Alignment.End else Alignment.Start) {
         if (line.media.isNotEmpty()) MediaStrip(line.media)
+        if (line.thinking.isNotBlank()) ThinkingBlock(line.thinking, still = line.text.isBlank())
         if (line.text.isNotBlank()) Text(
             if (line.fromUser) AnnotatedString(line.text) else AnswerCard.linkify(line.text, MaterialTheme.colorScheme.primary),
             Modifier
@@ -343,6 +344,24 @@ private fun Bubble(line: Line, openSection: (String) -> Unit) {
             color = if (line.fromUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
         )
         line.card?.let { AnswerCardView(it, openSection) }
+    }
+}
+
+/** The model's reasoning, folded under a one-line title: tap to read it. [still] is true until the answer itself starts. */
+@Composable
+private fun ThinkingBlock(text: String, still: Boolean) {
+    var open by remember { mutableStateOf(false) }
+    Column(Modifier.padding(bottom = 4.dp)) {
+        Text(
+            (if (open) "▾ " else "▸ ") + if (still) "Thinking…" else "Thought",
+            Modifier.clickable { open = !open }.padding(vertical = 2.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium,
+        )
+        if (open) Text(
+            text.trim(),
+            Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface).padding(horizontal = 10.dp, vertical = 6.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 
