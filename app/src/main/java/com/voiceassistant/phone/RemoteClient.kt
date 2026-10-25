@@ -106,6 +106,9 @@ class RemoteClient(private val target: Target, private val listener: RemoteListe
         send(JSONObject().put("type", "get_keywords").put("phrase", phrase).put("threshold", threshold.toDouble()))
     fun cameraPending(id: String, opened: Boolean) =
         send(JSONObject().put("type", "camera_pending").put("id", id).put("opened", opened))
+    /** A picture taken on purpose from the camera screen: [live] frames get a one-sentence answer shown over the camera, a single photo goes through the normal assistant. */
+    fun cameraAsk(jpegBase64: String, question: String, live: Boolean) =
+        send(JSONObject().put("type", "camera_ask").put("jpeg_b64", jpegBase64).put("question", question).put("live", live))
     fun cameraPhoto(id: String, jpegBase64: String) = send(JSONObject().put("type", "camera_photo").put("id", id).put("jpeg_b64", jpegBase64))
     fun cameraVideoBegin(id: String, count: Int, durationMs: Long, detailCount: Int = 0) =
         send(JSONObject().put("type", "camera_video_begin").put("id", id).put("count", count).put("duration_ms", durationMs).put("detail_count", detailCount))
@@ -129,5 +132,9 @@ class RemoteClient(private val target: Target, private val listener: RemoteListe
     fun listChats() = send(JSONObject().put("type", "list_chats"))
     fun openChat(id: String) = send(JSONObject().put("type", "open_chat").put("id", id))
     fun deleteChat(id: String) = send(JSONObject().put("type", "delete_chat").put("id", id))
+    fun listNotes() = send(JSONObject().put("type", "list_notes"))
+    fun addNote(text: String) = send(JSONObject().put("type", "add_note").put("text", text))
+    /** An empty [text] deletes the note. [index] counts from the first note the list showed (see [Controller.notesOffset]). */
+    fun editNote(index: Int, text: String) = send(JSONObject().put("type", "edit_note").put("index", index).put("text", text))
     fun phoneActionResult(id: String, ok: Boolean, message: String) = send(JSONObject().put("type", "phone_action_result").put("id", id).put("ok", ok).put("message", message))
 }

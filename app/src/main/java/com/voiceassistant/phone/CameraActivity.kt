@@ -97,6 +97,9 @@ class CameraActivity : ComponentActivity() {
     private var timerOn by mutableStateOf(false)
     private var busy by mutableStateOf(false)
     private var countdownJob: Runnable? = null
+    private var live by mutableStateOf(false) // "What's this?" mode: a frame goes to the PC every few seconds and the answer shows over the picture
+    private var liveBusy = false
+    private var question by mutableStateOf("")
 
     private val askCamera = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startCamera() else {
@@ -276,7 +279,8 @@ class CameraActivity : ComponentActivity() {
                 val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
                 val rotation = image.imageInfo.rotationDegrees
                 image.close()
-                Controller.sendPhoto(PhotoPrep.prepare(bytes, rotation))
+                if (Controller.cameraIsUser) Controller.askAboutPicture(PhotoPrep.prepare(bytes, rotation), question.trim(), live = false)
+                else Controller.sendPhoto(PhotoPrep.prepare(bytes, rotation))
                 runOnUiThread { finish() }
             }
 
@@ -286,6 +290,25 @@ class CameraActivity : ComponentActivity() {
                     Toast.makeText(this@CameraActivity, "The photo did not work. Try again.", Toast.LENGTH_SHORT).show()
                 }
             }
+        })
+    }
+
+    /** One frame for the live mode. Skipped while the last one is still being taken, so frames never pile up. */
+    private fun liveFrame() {
+        val capture = imageCapture ?: return
+        if (liveBusy || busy || !live) return
+        liveBusy = true
+        capture.takePicture(worker, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(image: ImageProxy) {
+                val buffer = image.planes[0].buffer
+                val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
+                val rotation = image.imageInfo.rotationDegrees
+                image.close()
+                Controller.askAboutPicture(PhotoPrep.prepare(bytes, rotation), question.trim(), live = true)
+                liveBusy = false
+            }
+
+            override fun onError(exception: ImageCaptureException) { liveBusy = false }
         })
     }
 
@@ -337,7 +360,7 @@ class CameraActivity : ComponentActivity() {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton({ Controller.cancelCamera("cancelled"); finish() }) { Text("✕ Close", color = Color.White) }
+                TextButton({ if (Controller.cameraIsUser) Controller.closeUserCamera() else Controller.cancelCamera("cancelled"); finish() }) { Text("✕ Close", color = Color.White) }
                 Text(
                     "%.1f×".format(zoom),
                     color = Color.White, fontSize = 16.sp,
@@ -346,6 +369,15 @@ class CameraActivity : ComponentActivity() {
             }
             if (countdown > 0) {
                 Text(countdown.toString(), Modifier.align(Alignment.Center), color = Color.White, fontSize = 96.sp)
+            }
+            if (live) {
+                LaunchedEffect(live) { while (live) { kotlinx.coroutines.delay(4000); liveFrame() } }
+                Text(
+                    Controller.liveAnswer.ifBlank { "Looking…" },
+                    Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 56.dp, start = 16.dp, end = 16.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
+                        .background(Color(0xAA000000)).padding(horizontal = 14.dp, vertical = 8.dp),
+                    color = Color.White, fontSize = 18.sp,
+                )
             }
             if (request?.isVideo == true && recordingOn) {
                 Text(
@@ -360,8 +392,22 @@ class CameraActivity : ComponentActivity() {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 val ask = request?.prompt.orEmpty()
+                if (Controller.cameraIsUser) {
+                    // everything the camera can do is here from the start: one photo, or live "What's this?"; the timer, zoom and lenses are below
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (!live) Button({}) { Text("Photo") } else OutlinedButton({ live = false; Controller.clearLiveAnswer() }) { Text("Photo", color = Color.White) }
+                        if (live) Button({}) { Text("Live: What's this?") } else OutlinedButton({ live = true }) { Text("Live: What's this?", color = Color.White) }
+                    }
+                    androidx.compose.material3.OutlinedTextField(
+                        question, { question = it.take(200) }, Modifier.fillMaxWidth().padding(horizontal = 24.dp), singleLine = true,
+                        placeholder = { Text(if (live) "What should it tell you? (optional)" else "Ask about it (optional)", color = Color(0xAAFFFFFF)) },
+                        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedBorderColor = Color.White, unfocusedBorderColor = Color(0x88FFFFFF), cursorColor = Color.White),
+                    )
+                }
                 Text(
                     when {
+                        Controller.cameraIsUser && live -> "Point at things: it names what it sees every few seconds"
+                        Controller.cameraIsUser -> "Point at what you want to know about, then tap the button"
                         request?.isVideo == true && sending -> "Picking frames and sending them…"
                         request?.isVideo == true && recordingOn -> "Recording. Tap the button again to stop."
                         request?.isVideo == true -> (if (ask.isBlank()) "Tap the red button to record" else "“$ask”") + " (up to ${request.maxSeconds} s" + (if (request.audio) ", with sound)" else ")")
@@ -389,6 +435,7 @@ class CameraActivity : ComponentActivity() {
                             .pointerInput(busy, recordingOn, sending) {
                                 detectTapGestures {
                                     if (request?.isVideo == true) { if (!sending) toggleRecording() }
+                                    else if (live) live = false // the button stops the live mode
                                     else if (!busy) { if (timerOn) startCountdown() else capture() }
                                 }
                             },

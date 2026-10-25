@@ -14,6 +14,7 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" /> <!-- "text Mom": the name is looked up on the phone; contacts never leave it -->
     <uses-permission android:name="android.permission.SEND_SMS" /> <!-- only when the user turns on "Send texts and calls myself" and allows it -->
     <uses-permission android:name="android.permission.CALL_PHONE" /> <!-- same switch: places the call instead of opening the dialler -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" /> <!-- only when the user turns on "Let the assistant read my calendar" -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <queries>

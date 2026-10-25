@@ -191,6 +191,9 @@ object Controller : RemoteListener {
                 "Lets the assistant play, pause, skip and set the volume of whatever is playing on this phone, such as YouTube Music, and start a song you ask for. " +
                     "Android calls this notification access, and turning this on opens that page.",
                 "toggle", value = mediaControl && NotificationReader.accessGranted(appContext), default = false, sectionTitle = where),
+            SettingItem("phone.calendar", if (calendarRead && !CalendarReader.allowed(appContext)) "Let the assistant read my calendar (needs permission: tap to allow)" else "Let the assistant read my calendar",
+                "Lets the assistant look at your calendar when you ask (“what's on today?”) and for a morning briefing. Event titles go to your PC for that answer only. Android asks for calendar permission.",
+                "toggle", value = calendarRead && CalendarReader.allowed(appContext), default = false, sectionTitle = where),
             SettingItem("phone.update_auto", "Check for app updates",
                 "Once a day, asks GitHub which version of this app is newest and tells you if there is one. Nothing about you is sent, and nothing is installed without you.",
                 "toggle", value = updateAuto, default = true, sectionTitle = where),
@@ -241,6 +244,11 @@ object Controller : RemoteListener {
                         appContext.startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     }
                 }
+            }
+            "phone.calendar" -> {
+                calendarRead = value == true
+                prefs.edit().putBoolean("calendar_read", calendarRead).apply()
+                if (calendarRead && !CalendarReader.allowed(appContext)) calendarPermissionAsk = true
             }
             "phone.update_auto" -> changeUpdateAuto(value == true)
             "phone.watch" -> changeWatch(value == true)
@@ -354,6 +362,7 @@ object Controller : RemoteListener {
         readNotifications = prefs.getBoolean("read_notifications", false)
         mediaControl = prefs.getBoolean("media_control", false)
         updateAuto = prefs.getBoolean("update_auto", true)
+        calendarRead = prefs.getBoolean("calendar_read", false)
         hfPaused = prefs.getBoolean("hf_paused", false)
         offlineHelperOn = prefs.getBoolean("offline_helper", false) && OnDeviceModel.available(appContext)
         handsFree = prefs.getBoolean("handsfree", false) &&
@@ -667,6 +676,20 @@ object Controller : RemoteListener {
         if (connected) client?.deleteChat(id)
     }
 
+    // ---- what the assistant remembers (the PC's notes) ---------------------------------------------
+    data class Note(val text: String, val at: String)
+
+    var notes by mutableStateOf<List<Note>>(emptyList())
+        private set
+    var notesOffset = 0
+        private set
+    var notesLoading by mutableStateOf(false)
+        private set
+
+    fun loadNotes() { if (connected) { notesLoading = true; client?.listNotes() } }
+    fun addNote(text: String) { if (connected && text.isNotBlank()) client?.addNote(text.trim()) }
+    fun editNote(position: Int, text: String) { if (connected) client?.editNote(notesOffset + position, text.trim()) }
+
     // ---- the watch ----------------------------------------------------------------------------
     /** The user allowed their watch to talk to the assistant through this phone (Settings, This phone). Off by default. */
     var watchEnabled by mutableStateOf(false)
@@ -924,6 +947,12 @@ object Controller : RemoteListener {
             client?.phoneActionResult(action.id, text != null, text ?: "notifications_off")
             return
         }
+        if (action.action == "read_calendar") { // switched on once in Settings, like notifications
+            val ok = calendarRead && CalendarReader.allowed(appContext)
+            val text = if (ok) runCatching { CalendarReader.read(appContext, action.args.optInt("days", 1)) }.getOrNull() else null
+            client?.phoneActionResult(action.id, text != null, text ?: "calendar_off")
+            return
+        }
         if (action.action == "media") { // switched on once in Settings; play, pause and skip need no question each time
             val (ok, text) = if (!mediaControl) false to "media_off" else MediaControl.perform(
                 appContext, action.args.optString("command"), action.args.optString("app"), action.args.optString("query"), visibleActivities > 0,
@@ -962,6 +991,11 @@ object Controller : RemoteListener {
     }
 
     private const val ACTION_NOTIFICATION_ID = 3
+
+    /** The user allowed the assistant to read this phone's calendar (Settings, This phone). Android's calendar permission is needed as well. */
+    var calendarRead by mutableStateOf(false)
+        private set
+    var calendarPermissionAsk by mutableStateOf(false)
 
     /** The user allowed the assistant to play, pause and skip music and video on this phone (Settings, This phone). Needs notification access too. */
     var mediaControl by mutableStateOf(false)
@@ -1131,6 +1165,13 @@ object Controller : RemoteListener {
                     notice = ""
                 } else notice = "That chat could not be opened."
                 "card" -> attachCard(AnswerCard.parse(message))
+                "camera_answer" -> liveAnswer = message.optString("text").take(300)
+                "notes" -> {
+                    val items = message.optJSONArray("items")
+                    notes = (0 until (items?.length() ?: 0)).mapNotNull { i -> items?.optJSONObject(i)?.let { Note(it.optString("text"), it.optString("at")) } }
+                    notesOffset = message.optInt("offset", 0)
+                    notesLoading = false
+                }
                 "phone_action" -> receiveAction(PhoneAction(message.optString("id"), message.optString("action"), message.optJSONObject("args") ?: JSONObject()))
                 "assistant_thinking" -> appendThinking(message.optString("text"))
                 "assistant_delta" -> {
@@ -1229,6 +1270,33 @@ object Controller : RemoteListener {
         camera?.let { client?.cameraCancel(it.id, reason) }
         closeCamera()
     }
+
+    // ---- the camera screen opened by the user (not by the assistant) --------------------------------
+    /** What the live "What's this?" mode last saw, shown over the camera. */
+    var liveAnswer by mutableStateOf("")
+        private set
+
+    /** Open the camera screen from the main screen. It offers photo, live "What's this?", the timer and zoom without the assistant asking. */
+    fun openUserCamera() {
+        if (!connected) { notice = "Connect to your PC first: it does the looking."; return }
+        liveAnswer = ""
+        camera = CameraRequest("user", "", false)
+    }
+
+    val cameraIsUser: Boolean get() = camera?.id == "user"
+
+    /** A photo or a live frame from the user's camera screen. */
+    fun askAboutPicture(jpeg: ByteArray, question: String, live: Boolean) {
+        client?.cameraAsk(android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP), question, live)
+        if (!live) {
+            lines.add(Line(true, question.ifBlank { "What is this?" }))
+            main.post { closeCamera() }
+        }
+    }
+
+    fun closeUserCamera() { if (cameraIsUser) closeCamera() }
+
+    fun clearLiveAnswer() { liveAnswer = "" }
 
     /** The prepared JPEG from the camera screen. */
     fun sendPhoto(jpeg: ByteArray) {

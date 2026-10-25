@@ -77,6 +77,7 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
         Controller.directPermissionAsk = false
         if (!granted.values.all { it }) Controller.directHelp = true
     }
+    private val askForCalendar = registerForActivityResult(ActivityResultContracts.RequestPermission()) { Controller.calendarPermissionAsk = false }
     private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         IncomingShare.fromUris(uris, contentResolver)?.let { Controller.receiveShare(it) }
     }
@@ -151,6 +152,9 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
                         dismissButton = { TextButton({ Controller.directHelp = false }) { Text("Not now") } },
                     )
                 }
+                LaunchedEffect(Controller.calendarPermissionAsk) {
+                    if (Controller.calendarPermissionAsk) askForCalendar.launch(CalendarReader.PERMISSION)
+                }
                 LaunchedEffect(Controller.directPermissionAsk) {
                     if (Controller.directPermissionAsk) askForDirect.launch(PhoneAction.DIRECT_PERMISSIONS)
                 }
@@ -169,6 +173,7 @@ class MainActivity : FragmentActivity() { // a FragmentActivity so the fingerpri
                         when {
                             Controller.pairing == null || Controller.setupActive -> SetupScreen()
                             historyOpen -> HistoryScreen { historyOpen = false }
+                            page == "memory-notes" -> MemoryScreen { settingsPage = "" }
                             page != null -> SettingsScreen(
                                 page = page,
                                 onNavigate = { settingsPage = it },
@@ -276,6 +281,8 @@ private fun TalkScreen(micAllowed: Boolean, askForMic: () -> Unit, onAttach: () 
         }
         Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onAttach) { Text("＋", style = MaterialTheme.typography.titleLarge) } // send a photo, video or file
+            val cameraContext = LocalContext.current
+            TextButton({ Controller.openUserCamera(); if (Controller.cameraIsUser) cameraContext.startActivity(android.content.Intent(cameraContext, CameraActivity::class.java)) }) { Text("📷", style = MaterialTheme.typography.titleLarge) } // photo or live "What's this?"
             OutlinedTextField(typed, { typed = it }, Modifier.weight(1f), placeholder = { Text("Or type a message") }, singleLine = true)
             Button({ Controller.sendText(typed); typed = "" }, enabled = Controller.connected || Controller.canAnswerOffline) { Text("Send") }
         }

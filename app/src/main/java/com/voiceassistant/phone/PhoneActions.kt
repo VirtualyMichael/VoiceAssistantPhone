@@ -25,10 +25,12 @@ data class PhoneAction(val id: String, val action: String, val args: JSONObject)
             (args.optString("location").takeIf { it.isNotBlank() }?.let { " at $it" } ?: "") + "?"
         "send_text" -> "Text ${args.optString("to")}: “${args.optString("message")}”"
         "call" -> "Call ${args.optString("to")}?"
+        "reply_notification" -> "Reply" + (args.optString("to").takeIf { it.isNotBlank() }?.let { " to $it" } ?: "") +
+            (args.optString("app").takeIf { it.isNotBlank() }?.let { " in $it" } ?: "") + ": “${args.optString("text")}”"
         else -> "The assistant asked for something this app does not know how to do yet."
     }
 
-    val known: Boolean get() = action in setOf("set_alarm", "set_timer", "add_event", "send_text", "call", "read_notifications", "media")
+    val known: Boolean get() = action in setOf("set_alarm", "set_timer", "add_event", "send_text", "call", "read_notifications", "media", "read_calendar", "reply_notification")
 
     /** Texts and calls go to someone: the user picks the number before agreeing. */
     val needsRecipient: Boolean get() = action == "send_text" || action == "call"
@@ -79,6 +81,10 @@ data class PhoneAction(val id: String, val action: String, val args: JSONObject)
                     }
                     start(context, Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:" + android.net.Uri.encode(to))))
                     true to "The phone's dialler opened with ${args.optString("to")}'s number; the user taps call there."
+                }
+                "reply_notification" -> {
+                    if (!NotificationReader.accessGranted(context)) return@runCatching false to "notifications_off"
+                    NotificationReader.reply(context, args.optString("app"), args.optString("to"), args.optString("text"))
                 }
                 "set_alarm" -> {
                     val intent = Intent(AlarmClock.ACTION_SET_ALARM)

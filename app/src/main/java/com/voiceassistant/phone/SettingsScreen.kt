@@ -131,6 +131,14 @@ fun SettingsScreen(
                             item { Group("Most used") { essentials.forEachIndexed { i, it -> if (i > 0) HorizontalDivider(); row(it, false) } } }
                         }
                         item { Group("This phone") { phoneItems.forEachIndexed { i, it -> if (i > 0) HorizontalDivider(); row(it, false) } } }
+                        item {
+                            Surface(Modifier.fillMaxWidth().clickable { onNavigate("memory-notes") }, shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                                    Text("What it remembers", style = MaterialTheme.typography.bodyLarge)
+                                    Text("The things you asked it to remember. Review, change or delete them.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
                         item { UpdateRow() }
                         item { QuitRow() }
                         if (snapshot != null) {

@@ -45,6 +45,35 @@ class NotificationReader : NotificationListenerService() {
             else rows.joinToString("\n")
         }
 
+        /**
+         * Answer a notification that has a reply box (messaging apps do) with the text the user agreed to. The newest one from the app (and, when a
+         * name is given, whose title contains it) is used. Returns (done, what to tell the assistant).
+         */
+        fun reply(context: Context, app: String, who: String, text: String): Pair<Boolean, String> {
+            val service = instance ?: return false to "notifications_off"
+            val list = runCatching { service.activeNotifications }.getOrNull() ?: return false to "notifications_off"
+            val pm = context.packageManager
+            for (sbn in list.sortedByDescending { it.postTime }) {
+                if (sbn.packageName == context.packageName) continue
+                val label = runCatching { pm.getApplicationLabel(pm.getApplicationInfo(sbn.packageName, 0)).toString() }.getOrDefault(sbn.packageName)
+                if (app.isNotBlank() && !label.contains(app, ignoreCase = true) && !sbn.packageName.contains(app, ignoreCase = true)) continue
+                val title = sbn.notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+                if (who.isNotBlank() && !title.contains(who, ignoreCase = true)) continue
+                val action = sbn.notification.actions?.firstOrNull { !it.remoteInputs.isNullOrEmpty() } ?: continue
+                val inputs = action.remoteInputs
+                val fill = android.content.Intent()
+                val results = android.os.Bundle().apply { putCharSequence(inputs[0].resultKey, text) }
+                android.app.RemoteInput.addResultsToIntent(inputs, fill, results)
+                return try {
+                    action.actionIntent.send(context, 0, fill)
+                    true to "Replied to ${title.ifBlank { label }} in $label."
+                } catch (e: android.app.PendingIntent.CanceledException) {
+                    false to "that notification can no longer be answered"
+                }
+            }
+            return false to "no_reply_target"
+        }
+
         private fun describe(sbn: StatusBarNotification, app: String, now: Long): String? {
             val extras = sbn.notification.extras
             val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
