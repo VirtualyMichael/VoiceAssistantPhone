@@ -18,8 +18,8 @@ android {
         applicationId = "com.voiceassistant.phone"
         minSdk = 30
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.15.1"
+        versionCode = 4
+        versionName = "0.16.0"
     }
     sourceSets {
         getByName("main").kotlin.directories.add("../watchlink/src/main/java") // the same protocol file the phone app uses
