@@ -16,8 +16,8 @@ android {
         applicationId = "com.voiceassistant.phone"
         minSdk = 26
         targetSdk = 37
-        versionCode = 4
-        versionName = "0.16.0"
+        versionCode = 5
+        versionName = "0.17.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // the phone is 64-bit ARM; leaving the other chips out keeps the sherpa-onnx library from adding tens of MB
