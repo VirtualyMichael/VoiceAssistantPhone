@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.voiceassistant.phone.watch.WatchProtocol
 import org.json.JSONObject
 import kotlin.math.sqrt
 
@@ -210,6 +211,13 @@ object Controller : RemoteListener {
             SettingItem("phone.watch", "Let my watch talk to the assistant",
                 "Lets the Voice Assistant app on your Wear OS watch ask questions through this phone and show the answers. The watch never reaches your PC itself. Off by default.",
                 "toggle", value = watchEnabled, default = false, sectionTitle = where),
+        ) + (if (!watchEnabled) emptyList() else listOf(
+            SettingItem("phone.watch_replies", "Where replies play when I ask from my watch",
+                "Watch: the spoken reply plays on your watch (its speaker, or earbuds connected to the watch). Phone: it plays here, as before. " +
+                    "Only questions asked from the watch are affected. A watch without a speaker shows the reply as text only.",
+                "choice", value = watchReplies, default = "phone",
+                choices = listOf(SettingChoice("watch", "Watch"), SettingChoice("phone", "Phone")), sectionTitle = where),
+        )) + listOf(
             SettingItem("phone.offline", if (offlineProgress >= 0) "Offline helper (downloading: $offlineProgress%)" else "Offline helper",
                 "When your PC is out of reach, typed requests like alarms, timers, texts, calls and simple questions are handled by a small AI model on this phone. " +
                     "It is much less capable than the one on your PC and cannot search the web. Needs a one-time ${OnDeviceModel.DOWNLOAD_TEXT} download; everything stays on this phone.",
@@ -252,6 +260,10 @@ object Controller : RemoteListener {
             }
             "phone.update_auto" -> changeUpdateAuto(value == true)
             "phone.watch" -> changeWatch(value == true)
+            "phone.watch_replies" -> {
+                watchReplies = if (value.toString() == "watch") "watch" else "phone"
+                prefs.edit().putString("watch_replies", watchReplies).apply()
+            }
             "phone.offline" -> if (offlineProgress < 0) changeOfflineHelper(value == true)
             "phone.notifications" -> {
                 readNotifications = value == true
@@ -356,6 +368,8 @@ object Controller : RemoteListener {
         sharePlaces = prefs.getBoolean("share_places", false)
         directSend = prefs.getBoolean("direct_send", false)
         watchEnabled = prefs.getBoolean("watch", false)
+        watchReplies = if (prefs.getString("watch_replies", "phone") == "watch") "watch" else "phone"
+        watchSpeaker = prefs.getBoolean("watch_speaker", false)
         WatchLink.init(appContext)
         WatchLink.enabled = watchEnabled
         cameraTimerDefault = prefs.getBoolean("camera_timer", false)
@@ -465,6 +479,7 @@ object Controller : RemoteListener {
     private val sink = object : HandsFreeSink {
         override fun sendAudio(frame: ByteArray) { client?.sendAudio(frame) }
         override fun wake() {
+            endWatchTurn()
             client?.wake()
             main.post { partial = ""; notice = ""; hfNotice = ""; latency = ""; gotWords = false; sent = false }
         }
@@ -474,7 +489,7 @@ object Controller : RemoteListener {
             main.post { level = 0f; sent = true; main.removeCallbacks(noWordsCheck); main.postDelayed(noWordsCheck, 4000) }
         }
         override fun interrupt() { client?.interrupt() }
-        override fun flushPlayback() { player.flush() }
+        override fun flushPlayback() { stopReplyAudio() }
         override fun changed() { main.post { hfState = engine?.state ?: HfState.Off } }
         override fun noSpeech() { main.post { notice = "I didn't hear a question. Say “$wakePhrase”, then ask." } }
     }
@@ -535,6 +550,7 @@ object Controller : RemoteListener {
         engine?.onDisconnected()
         mic?.stop(); mic = null
         client?.close(); client = null
+        WatchLink.endReplyAudio() // nothing more will come for a reply playing on the watch: it plays what it has
         main.removeCallbacks(noWordsCheck)
         connected = false
         pushWatchState()
@@ -551,10 +567,11 @@ object Controller : RemoteListener {
         val c = client ?: return
         if (!connected) return
         if (assistantState == "speaking" || assistantState == "thinking") {
-            player.flush()
+            stopReplyAudio()
             c.interrupt()
         }
         main.removeCallbacks(noWordsCheck)
+        endWatchTurn()
         talking = true
         sent = false
         gotWords = false
@@ -634,7 +651,7 @@ object Controller : RemoteListener {
             mic?.stop(); mic = null
             micOpen = false
         }
-        player.flush()
+        stopReplyAudio()
         client?.interrupt()
         main.removeCallbacks(noWordsCheck)
         sent = false
@@ -644,7 +661,7 @@ object Controller : RemoteListener {
     }
 
     fun stopSpeaking() {
-        player.flush()
+        stopReplyAudio()
         client?.interrupt()
         engine?.onPcState("idle") // the engine goes back to waiting for the wake phrase
         main.removeCallbacks(noWordsCheck)
@@ -697,8 +714,25 @@ object Controller : RemoteListener {
     private var watchTalking = false
     private val watchAudioWaiting = ArrayDeque<ByteArray>()
 
+    /** "Where replies play when I ask from my watch": "watch" or "phone" (the default). Shown in Settings only while the watch is allowed. */
+    var watchReplies by mutableStateOf("phone")
+        private set
+    /** The watch said it can play sound (some watches have no speaker); remembered, because the phone app may restart between questions. */
+    @Volatile private var watchSpeaker = false
+    /** The watch that asked the current question: its reply audio goes back to that one. */
+    @Volatile private var watchNode: String? = null
+    /** True from a question asked on the watch until the assistant is idle again; replies to anything else always play on the phone. */
+    @Volatile private var watchTurn = false
+    @Volatile private var watchTurnBusy = false
+    /** Where the reply now arriving is played, chosen when each sentence starts (on the PC link's own thread, so audio keeps its order). */
+    @Volatile private var replyTarget = REPLY_ON_PHONE
+    private const val REPLY_ON_PHONE = 0
+    private const val REPLY_ON_WATCH = 1
+    private const val REPLY_TEXT_ONLY = 2
+
     private fun changeWatch(on: Boolean) {
         watchEnabled = on
+        if (!on) { WatchLink.cancelReplyAudio(); watchTurn = false }
         WatchLink.enabled = on
         prefs.edit().putBoolean("watch", on).apply()
         if (on) pushWatchState()
@@ -708,18 +742,71 @@ object Controller : RemoteListener {
         WatchLink.state(if (connected) assistantState else "offline", connected, offlineHelperOn)
     }
 
-    /** The watch app opened: tell it where things stand. */
-    fun watchHello() = WatchLink.hello(if (connected) assistantState else "offline", connected, offlineHelperOn)
+    /** Stop the spoken reply wherever it is playing: on this phone and on the watch. */
+    private fun stopReplyAudio() {
+        player.flush()
+        WatchLink.cancelReplyAudio()
+    }
+
+    private fun chooseReplyTarget(): Int = when {
+        !watchTurn || !watchEnabled || watchReplies != "watch" || watchNode == null -> REPLY_ON_PHONE
+        !watchSpeaker -> REPLY_TEXT_ONLY
+        else -> REPLY_ON_WATCH
+    }
+
+    private fun rememberWatch(node: String?, hello: WatchProtocol.Hello?) {
+        if (node != null) watchNode = node
+        if (hello != null && hello.speaker != watchSpeaker) {
+            watchSpeaker = hello.speaker
+            prefs.edit().putBoolean("watch_speaker", hello.speaker).apply()
+        }
+    }
+
+    /** A question starts on the watch: its reply belongs to the watch until the assistant is idle again. */
+    private fun startWatchTurn(node: String?) {
+        if (node != null) watchNode = node
+        watchTurn = true
+        watchTurnBusy = false
+    }
+
+    /** The phone itself (its screen, hands-free, sharing, the camera) started something: that reply plays on the phone. */
+    private fun endWatchTurn() { watchTurn = false }
+
+    /** The watch app opened (or checks the phone is still there): tell it where things stand. */
+    fun watchHello(node: String? = null, hello: WatchProtocol.Hello? = null) {
+        rememberWatch(node, hello)
+        WatchLink.hello(if (connected) assistantState else "offline", connected, offlineHelperOn)
+    }
+
+    /** A quick reply or dictated text from the watch. */
+    fun watchQuick(text: String, node: String?) {
+        if (!connected && !canAnswerOffline) { watchHello(node); return } // the watch shows "Phone can't reach your PC" instead of waiting
+        sendText(text)
+        startWatchTurn(node)
+    }
+
+    /** The watch's audio stream ended. If the watch did not say "that was all" (it went out of reach mid-question), finish the question here. */
+    fun watchAudioEnded() {
+        main.post {
+            val question = watchQuestions
+            main.postDelayed({ if (watchTalking && watchQuestions == question) watchTalkEnd() }, 1500)
+        }
+    }
+    private var watchQuestions = 0
 
     /** The watch's button went down: the assistant starts listening, and the watch streams the audio (see [watchAudio]). */
-    fun watchTalkStart() {
+    fun watchTalkStart(node: String? = null, hello: WatchProtocol.Hello? = null) {
+        rememberWatch(node, hello)
         val c = client
         if (c == null || !connected) {
             WatchLink.reply("I can't reach your PC.")
+            pushWatchState()
             return
         }
+        startWatchTurn(node)
+        watchQuestions++
         if (assistantState == "speaking" || assistantState == "thinking") {
-            player.flush()
+            stopReplyAudio()
             c.interrupt()
         }
         watchAudioWaiting.clear()
@@ -776,6 +863,7 @@ object Controller : RemoteListener {
 
     fun sendText(text: String) {
         if (text.isBlank()) return
+        endWatchTurn() // the watch's own quick replies start a watch turn again right after this (see watchQuick)
         if (!connected && canAnswerOffline) askOffline(text.trim()) else client?.sendText(text.trim())
     }
 
@@ -1063,6 +1151,24 @@ object Controller : RemoteListener {
     }
 
     override fun onMessage(message: JSONObject) {
+        // The reply's audio arrives on this same thread right behind these messages, so where it plays is decided here, before the rest
+        // goes to the main thread: no piece of a reply can go to the phone while the rest goes to the watch, or the other way round.
+        var playHere = true
+        when (message.optString("type")) {
+            "audio_start" -> {
+                replyTarget = chooseReplyTarget()
+                playHere = replyTarget == REPLY_ON_PHONE
+                if (replyTarget == REPLY_ON_WATCH) watchNode?.let { WatchLink.replyAudioStart(it, message.optInt("sr", 16000)) }
+            }
+            "audio_flush" -> WatchLink.cancelReplyAudio()
+            "state" -> {
+                val s = message.optString("state")
+                if (s != "speaking") WatchLink.endReplyAudio() // the PC sends audio at playback speed, so "not speaking" means it all arrived
+                if (watchTurn) {
+                    if (s != "idle") watchTurnBusy = true else if (watchTurnBusy) watchTurn = false
+                }
+            }
+        }
         main.post {
             when (message.optString("type")) {
                 "state" -> {
@@ -1187,7 +1293,7 @@ object Controller : RemoteListener {
                         latency = "Reply started ${"%.1f".format((SystemClock.elapsedRealtime() - talkEndedAt) / 1000.0)} s after you let go"
                         talkEndedAt = 0L
                     }
-                    player.start(message.optInt("sr", 16000))
+                    if (playHere) player.start(message.optInt("sr", 16000))
                 }
                 "audio_flush" -> player.flush()
                 "error" -> lines.add(Line(false, "⚠ " + message.optString("message")))
@@ -1287,6 +1393,7 @@ object Controller : RemoteListener {
 
     /** A photo or a live frame from the user's camera screen. */
     fun askAboutPicture(jpeg: ByteArray, question: String, live: Boolean) {
+        endWatchTurn()
         client?.cameraAsk(android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP), question, live)
         if (!live) {
             lines.add(Line(true, question.ifBlank { "What is this?" }))
@@ -1361,7 +1468,13 @@ object Controller : RemoteListener {
         if (last >= 0 && !lines[last].fromUser && lines[last].card == null) lines[last] = lines[last].copy(text = lines[last].text + text) else lines.add(Line(false, text))
     }
 
-    override fun onAudio(pcm: ByteArray) = player.write(pcm)
+    override fun onAudio(pcm: ByteArray) {
+        when (replyTarget) {
+            REPLY_ON_WATCH -> WatchLink.replyAudio(pcm)
+            REPLY_TEXT_ONLY -> Unit // the watch that asked has no speaker, and the user chose not to hear replies on the phone
+            else -> player.write(pcm)
+        }
+    }
 
     override fun onClosed(reason: String) {
         main.post {

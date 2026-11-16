@@ -47,10 +47,14 @@
             <meta-data android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS" android:value="0" />
         </service>
 
-        <!-- what the phone sends: state, what it heard, the reply, questions needing yes or no -->
+        <!-- what the phone sends: state, what it heard, the reply, questions needing yes or no, and the spoken reply (a channel) -->
         <service android:name=".WatchListener" android:exported="true">
             <intent-filter>
                 <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data android:scheme="wear" android:host="*" android:pathPrefix="/va" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.CHANNEL_EVENT" />
                 <data android:scheme="wear" android:host="*" android:pathPrefix="/va" />
             </intent-filter>
         </service>

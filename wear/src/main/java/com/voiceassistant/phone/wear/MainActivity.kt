@@ -11,6 +11,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,17 +47,35 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         phone = PhoneLink(this)
+        WatchModel.ping = { phone.hello() }
         val startTalking = intent?.getBooleanExtra(EXTRA_TALK, false) == true // opened by the tile or the complication, which mean "ask now"
         setContent {
             val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) toggleTalking() }
             val tryTalk = {
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) toggleTalking()
+                if (WatchModel.needsCheck() && !recorder.active) { // the last check said it cannot work: ask the phone again instead of recording into nothing
+                    WatchModel.checkAgain()
+                    phone.hello()
+                } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) toggleTalking()
                 else askMic.launch(Manifest.permission.RECORD_AUDIO)
+            }
+            val dictated = { result: ActivityResult ->
+                val text = result.data?.let { Dictation.text(it) }.orEmpty().trim()
+                if (text.isNotEmpty()) { ReplyPlayer.stop(); phone.quick(text); WatchModel.sentQuick(text); buzz(30) }
+            }
+            val askInput = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult(), dictated)
+            val askSpeech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult(), dictated)
+            val dictate = {
+                // the watch's own input screen (speak, type or draw letters); a watch without one gets plain speech recognition
+                if (runCatching { askInput.launch(Dictation.inputIntent()) }.isFailure) runCatching { askSpeech.launch(Dictation.speechIntent()) }
+                Unit
             }
             talkNow = tryTalk
             LaunchedEffect(Unit) {
                 phone.hello()
                 if (startTalking && !recorder.active) tryTalk()
+            }
+            LaunchedEffect(WatchModel.problem) { // the phone went away or was switched off: close the microphone too
+                if (WatchModel.problem.isNotEmpty() && recorder.active) recorder.stop()
             }
             LaunchedEffect(WatchModel.recording) { // the screen stays on while the microphone is open, so a long question is not cut off by the watch sleeping
                 if (WatchModel.recording) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -66,9 +85,10 @@ class MainActivity : ComponentActivity() {
                     onMic = tryTalk,
                     onYes = { phone.answer(true); WatchModel.clearAsk() },
                     onNo = { phone.answer(false); WatchModel.clearAsk() },
-                    onStop = { phone.stop() },
-                    onNewChat = { phone.newChat(); WatchModel.newChat() },
-                    onQuick = { text -> phone.quick(text); WatchModel.sentQuick(text); buzz(30) },
+                    onStop = { ReplyPlayer.stop(); phone.stop() },
+                    onNewChat = { ReplyPlayer.stop(); phone.newChat(); WatchModel.newChat() },
+                    onQuick = { text -> ReplyPlayer.stop(); phone.quick(text); WatchModel.sentQuick(text); buzz(30) },
+                    onDictate = dictate,
                 )
             }
         }
@@ -97,7 +117,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         buzz(60)
+        ReplyPlayer.stop() // a new question: the last reply stops at once
         WatchModel.recording = true
+        WatchModel.busyNow()
         phone.talkStart()
         phone.openAudio { out ->
             if (out == null || !recorder.start(out) { main.postDelayed({ phone.talkEnd(); WatchModel.recording = false }, 450) }) {
@@ -122,7 +144,7 @@ class MainActivity : ComponentActivity() {
 private val QUICK_REPLIES = listOf("Yes", "No", "Thanks", "Continue", "Say that again", "Shorter please")
 
 @Composable
-private fun Screen(onMic: () -> Unit, onYes: () -> Unit, onNo: () -> Unit, onStop: () -> Unit, onNewChat: () -> Unit, onQuick: (String) -> Unit) {
+private fun Screen(onMic: () -> Unit, onYes: () -> Unit, onNo: () -> Unit, onStop: () -> Unit, onNewChat: () -> Unit, onQuick: (String) -> Unit, onDictate: () -> Unit) {
     val ask = WatchModel.ask
     ScalingLazyColumn(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item { Box(Modifier.padding(top = 18.dp)) { TimeText() } }
@@ -144,6 +166,7 @@ private fun Screen(onMic: () -> Unit, onYes: () -> Unit, onNo: () -> Unit, onSto
             if (WatchModel.phase == "speaking" || WatchModel.phase == "thinking") {
                 item { Chip(onClick = onStop, label = { Text("Stop") }, colors = ChipDefaults.secondaryChipColors()) }
             }
+            item { Chip(onClick = onDictate, label = { Text("Say or type a reply") }, colors = ChipDefaults.secondaryChipColors()) }
             items(QUICK_REPLIES) { text -> Chip(onClick = { onQuick(text) }, label = { Text(text) }, colors = ChipDefaults.secondaryChipColors()) }
             item { Chip(onClick = onNewChat, label = { Text("New chat") }, colors = ChipDefaults.secondaryChipColors()) }
         }
